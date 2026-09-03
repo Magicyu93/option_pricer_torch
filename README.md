@@ -29,12 +29,12 @@ market_data  ->  calibration  ->  market  ->  pricer
 | --- | --- |
 | `market_data/` | Raw quotes. Dumb dataclasses, no torch, no QuantLib. |
 | `calibration/curve_model/` | `RateCurve` — pillar zeros as an `nn.Parameter`. |
-| `calibration/surface.py` | `VolSurface` — implied vol as quoted. |
-| `calibration/vol_model/` | `VolModel` — the dynamics, and `to_sde()`. |
+| `calibration/surface.py` | `VolSurface` — implied vol as quoted; SVI. |
+| `calibration/vol_model/` | `VolModel` — the dynamics, and `to_sde()`: Black, Heston, local vol, LSV. |
 | `market/snapshot.py` | `MarketSnapshot` — calibrated state at one instant. |
 | `simulator/` | `SDE` + `EulerMaruyamaSimulator`, model-agnostic. |
 | `instruments/` | Contract specs, and their payoffs over paths. |
-| `analytics/black.py` | Closed-form Black, in torch, as the reference. |
+| `analytics/` | Closed-form Black and semi-analytic Heston, in torch, as the reference. |
 | `pricer/engine.py` | `price()`. |
 
 `VolModel.to_sde(market)` is the joint between calibration and simulation: the
@@ -84,11 +84,62 @@ valuation.
 pip install -e . --no-build-isolation    # --no-build-isolation only for pip < 23
 pytest -q
 python -m examples.european_options
+python -m examples.smile_models
 ```
+
+## The models
+
+Four `VolModel`s, all calibrated through one entry point,
+`calibrate(CalibrationInputs)`, and all handing the simulator an SDE through
+`to_sde(market)`.
+
+| Model | Fitted by | Priced against |
+| --- | --- | --- |
+| `BlackScholesModel` | LBFGS on one log-vol | `analytics.black` |
+| `HestonModel` | Adam then LBFGS on five parameters | `analytics.heston` |
+| `LocalVolModel` | Dupire — a formula, not an optimisation | the surface it came from |
+| `LSVModel` | the particle method | the same, plus Heston's forward smile |
+
+**Heston** is priced semi-analytically, by Lewis' single integral over a
+characteristic function in the branch-stable "little trap" form, with fixed
+Gauss-Legendre quadrature so the price stays differentiable. Calibration is
+therefore a second's work with exact gradients rather than a bumped Jacobian of
+a noisy Monte Carlo. Simulation uses the full-truncation Euler scheme, and the
+two agree to within the sampling error — which is the test. Vega is the parallel
+shift of the instantaneous spot volatility: there is no single "the vol" in a
+stochastic vol model, and a parallel bump is the scalar a desk quotes.
+
+**SVI** is fitted per expiry in the wing-slope parameterisation, so `b > 0`,
+`|rho| < 1` and Lee's moment bound hold by construction — no optimiser step can
+reach an arbitrageable wing. Durrleman's butterfly condition and the calendar
+condition against the previous expiry are penalised on a grid far wider than the
+quotes reach, since that is where an unpenalised fit likes to hide a negative
+density. Residuals are vega weighted: a quote worth a basis point implies a
+volatility, but it does not carry one.
+
+**Local vol** is not calibrated in any real sense. Dupire's formula gives the
+unique diffusion consistent with an arbitrage-free surface, and the work is
+evaluating it stably. The derivatives of total variance are taken **by autograd
+through the fitted surface**, not by differencing quotes — which removes the
+entire class of error that makes Dupire a cautionary tale. The denominator is
+the implied density, so a non-positive one is a diagnosis of the input surface,
+not of the formula.
+
+**LSV** is Heston with a leverage function `L(S, t)` chosen so that
+`L^2 E[v | S] = sigma_loc^2` — Gyongy's condition, which is implicit, since the
+expectation is under the model whose parameter `L` is. The particle method
+unrolls the fixed point in time: simulate a cloud of paths and estimate
+`E[v | S]` from the particles themselves at each step, just before taking the
+step that needs it. One forward pass, no iteration, no nested Monte Carlo.
+
+`python -m examples.smile_models` calibrates all three smile models to one
+quoted surface, shows them reproducing it, and then prices an Asian to show
+where they part company.
 
 ## Not implemented
 
-Local vol, Heston and LSV dynamics and their calibrators; SVI fitting; curve
-bootstrapping from deposit and swap quotes; discretely-monitored Asians and
-seasoned averages; variance reduction beyond antithetic. Each has a named seam
-and a stub module.
+Curve bootstrapping from deposit and swap quotes; barriers, digitals and
+American exercise; discretely-monitored Asians and seasoned averages; variance
+reduction beyond antithetic sampling, including the control variate and the
+quasi-random path construction the Brownian bridge exists for. Each has a named
+seam.

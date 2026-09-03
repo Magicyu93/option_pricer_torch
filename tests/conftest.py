@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 
 import pytest
@@ -47,3 +48,46 @@ def analytic(market: tp.MarketSnapshot, strike: float, right: int) -> dict[str, 
         "gamma": float(B.black_gamma(fwd, strike, t, VOL, disc)) * dfds**2,
         "vega": float(B.black_vega(fwd, strike, t, VOL, disc)),
     }
+
+
+def heston_quotes(
+    inputs: "tp.CalibrationInputs",
+    model: "tp.HestonModel",
+    months: tuple[int, ...] = (1, 3, 6, 12, 24),
+    moneyness: tuple[float, ...] = (0.7, 0.8, 0.9, 0.95, 1.0, 1.05, 1.1, 1.2, 1.4),
+) -> tp.QuoteSet:
+    """A synthetic quote set: Heston's own prices, treated as the market's.
+
+    Fitting something to a model's exact prices is the only way to say what a
+    calibration recovers, because the answer is known. Real quotes have a
+    bid-ask and a smile no model reproduces exactly, and a test written against
+    them can only assert that nothing crashed.
+    """
+    options = []
+    for m in months:
+        expiry = inputs.as_of + dt.timedelta(days=int(30.4 * m))
+        t = inputs.time_to(expiry)
+        forward = inputs.forward(t).detach()
+        discount = inputs.discount.discount(t).detach()
+        for level in moneyness:
+            strike = round(float(forward) * level, 4)
+            price = float(model.price(forward, strike, t, discount, 1).detach())
+            options.append(tp.OptionQuote(expiry=expiry, strike=strike, right="call", last=price))
+    return tp.QuoteSet(
+        as_of=inputs.as_of,
+        spot=tp.SpotQuote("TEST", float(inputs.spot), inputs.as_of),
+        options=tuple(options),
+    )
+
+
+@pytest.fixture
+def smile_model() -> tp.HestonModel:
+    """The Heston parameters every synthetic surface in these tests comes from."""
+    return tp.HestonModel(v0=0.04, kappa=1.5, theta=0.05, xi=0.6, rho=-0.7)
+
+
+@pytest.fixture
+def smile_inputs(market: tp.MarketSnapshot, smile_model: tp.HestonModel) -> tp.CalibrationInputs:
+    """Calibration inputs carrying a quoted Heston smile."""
+    bare = tp.CalibrationInputs.from_market(market)
+    return dataclasses.replace(bare, quotes=heston_quotes(bare, smile_model))

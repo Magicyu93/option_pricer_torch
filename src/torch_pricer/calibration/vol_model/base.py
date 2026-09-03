@@ -31,8 +31,7 @@ from typing import TYPE_CHECKING
 
 import torch.nn as nn
 
-from ..curve_model.curves import RateCurve
-from ..surface import VolSurface
+from ..inputs import CalibrationInputs
 
 if TYPE_CHECKING:  # pragma: no cover
     from ...market.snapshot import MarketSnapshot
@@ -53,5 +52,11 @@ class VolModel(nn.Module, ABC):
         """
 
     @abstractmethod
-    def calibrate(self, quotes, rate_curves: RateCurve, vol_surface: VolSurface) -> None:
-        """Fit the model's parameters. Mutates in place."""
+    def calibrate(self, inputs: CalibrationInputs) -> None:
+        """Fit the model's parameters to ``inputs``. Mutates in place.
+
+        One argument rather than a list of them because the models differ in
+        what they consume -- premiums, an implied surface, or both plus a
+        simulation -- while agreeing on the market state they need; see
+        :class:`~torch_pricer.calibration.inputs.CalibrationInputs`.
+        """

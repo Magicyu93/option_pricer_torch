@@ -7,11 +7,11 @@ from typing import TYPE_CHECKING
 import torch
 import torch.nn as nn
 
-from ...errors import ValidationError
+from ...errors import CalibrationError, ValidationError
+from ...analytics.black import black_price
 from ...simulator.gbm import GeometricBrownianMotion
 from ...tensors import as_tensor
-from ..curve_model.curves import RateCurve
-from ..surface import VolSurface
+from ..inputs import CalibrationInputs
 from .base import VolModel
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -42,11 +42,51 @@ class BlackScholesModel(VolModel):
             vol=self.vol, discount=market.discount, dividend=market.dividend
         )
 
-    def calibrate(self, quotes, rate_curves: RateCurve, vol_surface: VolSurface) -> None:
-        raise NotImplementedError(
-            "fitting a single vol to a quote set is not implemented yet; "
-            "construct BlackScholesModel(vol) directly"
+    def calibrate(self, inputs: CalibrationInputs, tolerance: float | None = None) -> None:
+        """Fit the one volatility to ``inputs.quotes``. Mutates in place.
+
+        One parameter and a strictly monotone objective, so this is a root find
+        dressed as an optimisation: LBFGS on the log-vol converges in a handful
+        of iterations from any start. The residuals are vega-normalised prices
+        for the same reason as in
+        :mod:`torch_pricer.calibration.vol_model.heston_cal` -- unweighted price
+        errors would fit the in-the-money quotes, which carry almost no vol.
+
+        A single number cannot reproduce a smile, and this does not pretend to:
+        what comes back is the vega-weighted average level of the quoted vols,
+        and :attr:`fit_report` says how far the quotes were from it.
+        """
+        from .heston_cal import _targets  # the same quote flattening, weights and all
+
+        targets = _targets(inputs)
+
+        def objective() -> torch.Tensor:
+            model = black_price(
+                targets["forward"], targets["strike"], targets["t"], self.vol,
+                targets["discount"], targets["right"],
+            )
+            return (((model - targets["price"]) / targets["vega"]) ** 2 * targets["weight"]).mean()
+
+        optimiser = torch.optim.LBFGS(
+            [self._log_vol], max_iter=100, line_search_fn="strong_wolfe"
         )
+
+        def closure() -> torch.Tensor:
+            optimiser.zero_grad()
+            loss = objective()
+            loss.backward()
+            return loss
+
+        optimiser.step(closure)
+
+        with torch.no_grad():
+            rmse = float(objective().sqrt())
+        self.fit_report = {"rmse_vol": rmse, "n_quotes": int(targets["strike"].numel())}
+        if tolerance is not None and rmse > tolerance:
+            raise CalibrationError(
+                f"a flat vol left an RMSE of {rmse:.4%} across the quotes, above {tolerance:.4%}; "
+                "the market has a smile and this model has no way to hold one"
+            )
 
     def extra_repr(self) -> str:  # pragma: no cover
         return f"vol={float(self.vol.detach()):.4f}"

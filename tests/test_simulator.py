@@ -86,7 +86,32 @@ def test_no_grad_flag_detaches():
     assert not out.requires_grad
 
 
-def test_brownian_bridge_raises_rather_than_returning_the_exception():
-    bridge = BrownianBridge()
-    with pytest.raises(NotImplementedError):
-        bridge.drift(torch.zeros(2, 1), torch.tensor(0.0))
+def test_brownian_bridge_lands_on_its_pin():
+    """The final Euler step leaves only the last increment's spread, ``sigma sqrt(h)``."""
+    steps, sigma = 500, 0.3
+    bridge = BrownianBridge(terminal_level=0.5, terminal_time=1.0, sigma=sigma)
+    grid = torch.linspace(0.0, 1.0, steps + 1)
+    terminal = EulerMaruyamaSimulator(bridge).simulate(
+        torch.zeros(100_000, 1), grid, NormalDraws(100_000, seed=1).draw(steps), no_grad=True
+    )[:, 0]
+    assert float(terminal.mean()) == pytest.approx(0.5, abs=1e-3)
+    assert float(terminal.std()) == pytest.approx(sigma * (1.0 / steps) ** 0.5, rel=0.02)
+
+
+def test_brownian_bridge_has_its_closed_form_variance():
+    """``sigma^2 t (T - t) / T``: zero at both ends, largest in the middle."""
+    steps = 400
+    bridge = BrownianBridge(terminal_level=0.5, terminal_time=1.0, sigma=0.3)
+    grid = torch.linspace(0.0, 1.0, steps + 1)
+    path = EulerMaruyamaSimulator(bridge).simulate_with_trajectory(
+        torch.zeros(100_000, 1), grid, NormalDraws(100_000, seed=2).draw(steps), no_grad=True
+    )[:, :, 0]
+    for fraction in (0.25, 0.5, 0.75):
+        j = int(fraction * steps)
+        assert float(path[:, j].var()) == pytest.approx(float(bridge.variance(grid[j])), rel=0.03)
+        assert float(path[:, j].mean()) == pytest.approx(fraction * 0.5, abs=5e-3)
+
+
+def test_brownian_bridge_rejects_a_terminal_time_in_the_past():
+    with pytest.raises(ValidationError, match="terminal time must be positive"):
+        BrownianBridge(terminal_time=0.0)

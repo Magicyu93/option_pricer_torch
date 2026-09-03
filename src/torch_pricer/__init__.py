@@ -33,6 +33,19 @@ from .errors import (  # noqa: E402
     PricingError,
     ValidationError,
 )
+from .calibration.curve_model.curves import RateCurve  # noqa: E402
+from .calibration.inputs import CalibrationInputs  # noqa: E402
+from .calibration.surface import (  # noqa: E402
+    FlatVolSurface,
+    SVISlice,
+    SVISurface,
+    VolSurface,
+)
+from .calibration.vol_model.base import VolModel  # noqa: E402
+from .calibration.vol_model.black import BlackScholesModel  # noqa: E402
+from .calibration.vol_model.heston_cal import HestonModel  # noqa: E402
+from .calibration.vol_model.local_vol_cal import LocalVolModel  # noqa: E402
+from .calibration.vol_model.lsv_cal import LSVModel  # noqa: E402
 from .instruments.spec import (  # noqa: E402
     AsianOption,
     AverageKind,
@@ -42,6 +55,12 @@ from .instruments.spec import (  # noqa: E402
     VanillaOption,
 )
 from .market.snapshot import MarketSnapshot  # noqa: E402
+from .market_data.quotes import (  # noqa: E402
+    OptionQuote,
+    QuoteSet,
+    RateQuote,
+    SpotQuote,
+)
 from .pricer.engine import MCConfig, PricingResult, price  # noqa: E402
 
 __all__ = [
@@ -60,6 +79,21 @@ __all__ = [
     "VanillaOption",
     "AsianOption",
     "MarketSnapshot",
+    "OptionQuote",
+    "RateQuote",
+    "SpotQuote",
+    "QuoteSet",
+    "RateCurve",
+    "CalibrationInputs",
+    "VolSurface",
+    "FlatVolSurface",
+    "SVISlice",
+    "SVISurface",
+    "VolModel",
+    "BlackScholesModel",
+    "HestonModel",
+    "LocalVolModel",
+    "LSVModel",
     "MCConfig",
     "PricingResult",
     "price",
