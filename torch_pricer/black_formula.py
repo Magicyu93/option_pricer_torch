@@ -6,8 +6,8 @@ _EPS = 1e-12
 
 def d1_d2(forward, strike, t, vol):
     """The two Black arguments. Degenerate inputs are clamped, not rejected."""
-    forward = np.asarray(forward, dtype=float)
-    strike = np.asarray(strike, dtype=float)
+    forward = np.maximum(np.asarray(forward, dtype=float), _EPS)
+    strike = np.maximum(np.asarray(strike, dtype=float), _EPS)
     t = np.maximum(np.asarray(t, dtype=float), _EPS)
     vol = np.maximum(np.asarray(vol, dtype=float), _EPS)
     sd = vol * np.sqrt(t)
@@ -41,14 +41,20 @@ def black_delta(forward, strike, t, vol, discount=1.0, right=1):
 
 
 def black_gamma(forward, strike, t, vol, discount=1.0):
-    """''dV / dS^2': D N'(d1) / F / (sigma * sqrt(T)) Identical for calls and puts. """
-    d1, _ = d1_d2(forward, strike, t, vol)
-    sd = vol * np.sqrt(t)
+    """Gamma with respect to the *forward*: ``D N'(d1) / (F sigma sqrt(T))``.
 
-    gamma = np.asarray(discount, dtype=float) * (
-        norm.pdf(d1) / forward / np.asarray(sd, dtype=float)
-    )
-    return gamma
+    This is ``d2V/dF2``, not ``d2V/dS2``. For spot gamma multiply by
+    ``(dF/dS)^2 = (D_q/D_r)^2``, the same conversion :func:`black_delta` needs.
+    Identical for calls and puts.
+    """
+    d1, _ = d1_d2(forward, strike, t, vol)
+    # Clamp exactly as d1_d2 does. Recomputing sd from the raw arguments would
+    # divide by zero at t=0 or vol=0 while every sibling degrades gracefully.
+    forward = np.maximum(np.asarray(forward, dtype=float), _EPS)
+    t = np.maximum(np.asarray(t, dtype=float), _EPS)
+    vol = np.maximum(np.asarray(vol, dtype=float), _EPS)
+    sd = vol * np.sqrt(t)
+    return np.asarray(discount, dtype=float) * norm.pdf(d1) / (forward * sd)
 
 
 def intrinsic(forward, strike, discount=1.0, right=1):
@@ -88,4 +94,4 @@ def implied_vol(
     :return:
     '''
 
-    return NotImplemented
+    raise NotImplementedError("implied_vol")

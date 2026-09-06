@@ -15,8 +15,8 @@ import datetime as dt
 from dataclasses import dataclass
 from enum import Enum
 
-from ...conventions import DEFAULT_CONTRACT_MULTIPLIER
-from ...errors import ValidationError
+from torch_pricer.conventions import DEFAULT_CONTRACT_MULTIPLIER
+from torch_pricer.errors import ValidationError
 
 
 class Right(str, Enum):
