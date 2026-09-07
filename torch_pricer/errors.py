@@ -1,31 +1,32 @@
 """Exception hierarchy.
 
-Every error this package raises on its own derives from :class:`QLDeskError`, so
+Every error this package raises on its own derives from :class:`PricerError`, so
 a caller can wrap a pricing call in one ``except`` and be sure a QuantLib
-``RuntimeError`` (which is what SWIG raises for every C++ exception, including
-"root not bracketed" and "negative discount") does not leak through untyped.
+``RuntimeError`` (which is what SWIG raises for every C++ exception) does not
+leak through untyped. QuantLib is only reachable from the date-convention layer,
+so in practice that is the only place such a wrap is needed.
 """
 
 from __future__ import annotations
 
 
-class QLDeskError(Exception):
+class PricerError(Exception):
     """Base class for everything raised here."""
 
 
-class ValidationError(QLDeskError):
+class ValidationError(PricerError):
     """A caller-supplied value is outside the domain the model accepts."""
 
 
-class MarketDataError(QLDeskError):
+class MarketDataError(PricerError):
     """Market data is missing, stale, or internally inconsistent."""
 
 
-class CalibrationError(QLDeskError):
+class CalibrationError(PricerError):
     """A calibration failed to converge, or converged to a rejected point."""
 
 
-class PricingError(QLDeskError):
+class PricingError(PricerError):
     """The pricing call itself failed."""
 
 

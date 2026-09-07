@@ -1,36 +1,27 @@
-"""Dates, calendars, day counts, and the global-state discipline QuantLib needs.
+"""Dates, calendars and day counts.
 
-QuantLib keeps the pricing date in a process-wide singleton
-(``ql.Settings.instance().evaluationDate``) and every term structure built with
-a *relative* reference date silently follows it. That is the single most common
-way a QuantLib service returns a wrong number in production: request A moves the
-evaluation date while request B is halfway through a valuation.
+This is the only module that touches QuantLib, and it only ever asks it
+questions about the calendar. Nothing here returns a term structure, and nothing
+here reads or writes ``ql.Settings.instance().evaluationDate``.
 
-Two rules follow, and this module is where they are enforced:
-
-1. Never assign to ``evaluationDate`` directly. Use :func:`evaluation_date`,
-   which restores the previous value on exit even if the body raises.
-2. Everything that reads the global date holds :data:`PRICING_LOCK` while it
-   does. The lock is reentrant, so nesting is safe.
-
-The lock serialises pricing across threads. That is deliberate: QuantLib's
-Python bindings are not thread-safe, and a correct number computed on one core
-beats four cores racing. For real parallelism, fan out over *processes*.
+That is deliberate. QuantLib keeps the pricing date in a process-wide singleton
+and every term structure built with a *relative* reference date silently follows
+it, which is the classic way a QuantLib service returns a wrong number under
+concurrency. This package sidesteps the problem rather than locking around it:
+curves are :class:`~torch_pricer.calibration.curve_model.curves.RateCurve`
+objects holding torch tensors indexed by year fraction, and the valuation date
+lives on the :class:`~torch_pricer.market.snapshot.MarketSnapshot` that the
+caller passes in. There is no global pricing state to guard, so pricing calls do
+not serialise against each other.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import threading
-from collections.abc import Iterator
-from contextlib import contextmanager
 
 import QuantLib as ql
 
-from .errors import ValidationError
-
-#: Reentrant lock guarding QuantLib's global evaluation date.
-PRICING_LOCK = threading.RLock()
+from torch_pricer.errors import ValidationError
 
 _CALENDARS: dict[str, ql.Calendar] = {
     "NYSE": ql.UnitedStates(ql.UnitedStates.NYSE),
@@ -49,6 +40,8 @@ _DAY_COUNTS: dict[str, ql.DayCounter] = {
     "30/360": ql.Thirty360(ql.Thirty360.BondBasis),
     "BUS/252": ql.Business252(_CALENDARS["NYSE"]),
 }
+
+_TENOR_UNITS = {"D": ql.Days, "W": ql.Weeks, "M": ql.Months, "Y": ql.Years}
 
 #: What the rest of the package uses when a caller does not say otherwise.
 DEFAULT_CALENDAR = "NYSE"
@@ -79,6 +72,14 @@ def day_count(name: str = DEFAULT_DAY_COUNT) -> ql.DayCounter:
         ) from None
 
 
+def parse_tenor(tenor: str) -> ql.Period:
+    """Parse ``"3M"``, ``"10Y"``, ``"1W"`` into a ``ql.Period``."""
+    s = tenor.strip().upper()
+    if len(s) < 2 or not s[:-1].isdigit() or s[-1] not in _TENOR_UNITS:
+        raise ValidationError(f"cannot parse tenor {tenor!r}; expected e.g. '3M', '10Y'")
+    return ql.Period(int(s[:-1]), _TENOR_UNITS[s[-1]])
+
+
 def to_ql(d: dt.date | dt.datetime | ql.Date | str) -> ql.Date:
     """Coerce a date-like value to ``ql.Date``. Strings must be ISO ``YYYY-MM-DD``."""
     if isinstance(d, ql.Date):
@@ -100,40 +101,34 @@ def from_ql(d: ql.Date) -> dt.date:
     return dt.date(d.year(), d.month(), d.dayOfMonth())
 
 
+def to_date(d: dt.date | dt.datetime | ql.Date | str) -> dt.date:
+    """Coerce a date-like value to ``datetime.date``."""
+    if isinstance(d, ql.Date):
+        return from_ql(d)
+    if isinstance(d, str):
+        try:
+            return dt.date.fromisoformat(d)
+        except ValueError as exc:
+            raise ValidationError(f"expected ISO date YYYY-MM-DD, got {d!r}") from exc
+    if isinstance(d, dt.datetime):
+        return d.date()
+    if not isinstance(d, dt.date):
+        raise ValidationError(f"cannot convert {type(d).__name__} to a date")
+    return d
+
+
 def year_fraction(
-    start: dt.date | ql.Date,
-    end: dt.date | ql.Date,
+    start: dt.date | ql.Date | str,
+    end: dt.date | ql.Date | str,
     convention: str = DEFAULT_DAY_COUNT,
 ) -> float:
-    """Year fraction between two dates under the named day count."""
-    return day_count(convention).yearFraction(to_ql(start), to_ql(end))
+    """Year fraction between two dates under the named day count.
 
-
-@contextmanager
-def evaluation_date(d: dt.date | ql.Date | str) -> Iterator[ql.Date]:
-    """Set QuantLib's global evaluation date for the duration of the block.
-
-    Holds :data:`PRICING_LOCK` throughout and restores the previous date on the
-    way out, including on exception. This is the only supported way to move the
-    pricing date.
-
-    >>> with evaluation_date("2026-03-26") as d:      # doctest: +SKIP
-    ...     price = pricer.price(spec, market)
+    This is the bridge between the contract's calendar dates and the simulator's
+    continuous time axis: everything downstream of here measures time in years
+    from the snapshot's ``as_of``.
     """
-    qd = to_ql(d)
-    with PRICING_LOCK:
-        previous = ql.Settings.instance().evaluationDate
-        ql.Settings.instance().evaluationDate = qd
-        try:
-            yield qd
-        finally:
-            ql.Settings.instance().evaluationDate = previous
-
-
-def current_evaluation_date() -> dt.date:
-    """The evaluation date QuantLib would use right now."""
-    with PRICING_LOCK:
-        return from_ql(ql.Settings.instance().evaluationDate)
+    return day_count(convention).yearFraction(to_ql(start), to_ql(end))
 
 
 def business_days_between(
@@ -153,9 +148,10 @@ def advance(
     convention: int = ql.Following,
 ) -> dt.date:
     """Advance a date by ``n`` periods, rolling to a good business day."""
-    units = {"D": ql.Days, "W": ql.Weeks, "M": ql.Months, "Y": ql.Years}
     try:
-        ql_unit = units[unit.upper()]
+        ql_unit = _TENOR_UNITS[unit.upper()]
     except KeyError:
-        raise ValidationError(f"unknown unit {unit!r}; use one of {sorted(units)}") from None
+        raise ValidationError(
+            f"unknown unit {unit!r}; use one of {sorted(_TENOR_UNITS)}"
+        ) from None
     return from_ql(calendar(calendar_name).advance(to_ql(d), n, ql_unit, convention))
