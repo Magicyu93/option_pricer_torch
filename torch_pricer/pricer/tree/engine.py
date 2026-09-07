@@ -51,11 +51,41 @@ class LatticeResult:
     n_steps: tuple[int, ...] = ()
 
 
+def _escrow(
+    dividends, t: float, rate: float, n_steps: int, dt: float
+) -> tuple[float, np.ndarray]:
+    """``(PV at t=0, PV still ahead at each step)`` for known cash dividends.
+
+    The escrowed-spot model, matching
+    :mod:`torch_pricer.market.dividends` step for step -- the same approximation
+    on both sides, so comparing them tests the implementations rather than
+    hiding a model difference inside an agreement.
+    """
+    ahead = np.zeros(n_steps + 1)
+    if not dividends:
+        return 0.0, ahead
+    steps = np.arange(n_steps + 1) * dt
+    for time, amount in dividends:
+        if time > t or amount == 0.0:
+            continue
+        ahead += np.where(steps < time, amount * np.exp(-rate * (time - steps)), 0.0)
+    return float(ahead[0]), ahead
+
+
 def _induct(
-    lattice: Lattice, strike: float, sign: float, american: bool, want_greeks: bool
+    lattice: Lattice, strike: float, sign: float, american: bool, want_greeks: bool,
+    add_back: np.ndarray | None = None,
 ):
-    """Roll the payoff back to the root. Returns ``(price, delta, gamma)``."""
-    values = np.maximum(sign * (lattice.levels(lattice.n_steps) - strike), 0.0)
+    """Roll the payoff back to the root. Returns ``(price, delta, gamma)``.
+
+    ``add_back`` restores the escrowed dividends, so exercise at an interim node
+    is tested against the real spot rather than the diffusing part of it.
+    """
+    def spot_at(step: int) -> np.ndarray:
+        levels = lattice.levels(step)
+        return levels if add_back is None else levels + add_back[step]
+
+    values = np.maximum(sign * (spot_at(lattice.n_steps) - strike), 0.0)
     disc, p = lattice.discount, lattice.p
     captured: dict[int, tuple[np.ndarray, np.ndarray]] = {}
 
@@ -64,9 +94,9 @@ def _induct(
         # step later, so the continuation value is a two-point stencil.
         values = disc * (p * values[1:] + (1.0 - p) * values[:-1])
         if american:
-            values = np.maximum(values, sign * (lattice.levels(step) - strike))
+            values = np.maximum(values, sign * (spot_at(step) - strike))
         if want_greeks and step in (1, 2):
-            captured[step] = (lattice.levels(step), values.copy())
+            captured[step] = (spot_at(step), values.copy())
 
     price = float(values[0])
     if not want_greeks or 1 not in captured:
@@ -96,6 +126,7 @@ def price_lattice(
     n_steps: int = 512,
     greeks: bool = False,
     average_adjacent: bool = True,
+    dividends: tuple[tuple[float, float], ...] = (),
 ) -> LatticeResult:
     """Price a vanilla option on a CRR tree.
 
@@ -112,6 +143,9 @@ def price_lattice(
         greeks: also return delta and gamma, read off the lattice
         average_adjacent: average the ``n_steps`` and ``n_steps + 1`` trees to
             damp CRR's even-odd oscillation
+        dividends: known cash dividends as ``(time in years, amount)`` pairs,
+            handled by escrowing -- a cash drop is additive and would otherwise
+            stop the lattice recombining
 
     Returns:
         A :class:`LatticeResult`.
@@ -132,10 +166,19 @@ def price_lattice(
     american = style is Style.AMERICAN
     counts = (n_steps, n_steps + 1) if average_adjacent else (n_steps,)
 
-    out = [
-        _induct(build(spot, t, vol, rate, dividend, n), strike, sign, american, greeks)
-        for n in counts
-    ]
+    out = []
+    for n in counts:
+        pv0, ahead = _escrow(dividends, t, rate, n, t / n)
+        if pv0 >= spot:
+            raise ValidationError(
+                f"dividends present-value {pv0:g} at or above spot {spot:g}; the "
+                "escrowed process would start at or below zero"
+            )
+        lattice = build(spot - pv0, t, vol, rate, dividend, n)
+        out.append(
+            _induct(lattice, strike, sign, american, greeks,
+                    add_back=ahead if dividends else None)
+        )
     mean = lambda i: (  # noqa: E731 - three one-line means, not worth a def
         None if out[0][i] is None else sum(o[i] for o in out) / len(out)
     )

@@ -16,13 +16,14 @@ from __future__ import annotations
 import copy
 import dataclasses
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 from torch import Tensor
 
 from torch_pricer.conventions import DEFAULT_DAY_COUNT, to_date, year_fraction
 from torch_pricer.market.curves import RateCurve
+from torch_pricer.market.dividends import DividendSchedule
 from torch_pricer.market.surface import FlatVolSurface, VolSurface
 from torch_pricer.tensors import as_tensor
 
@@ -43,6 +44,12 @@ class MarketSnapshot:
     discount: RateCurve
     dividend: RateCurve
     vol_surface: VolSurface  # implied vol surface for options on this underlying
+
+    #: Known cash dividends. Distinct from ``dividend``, the continuous yield
+    #: curve: a yield is right for an index and wrong for a single name, where
+    #: an American call's early exercise turns on the discrete payment itself.
+    #: Empty by default, which reproduces the pure-yield behaviour exactly.
+    dividends: DividendSchedule = field(default_factory=DividendSchedule)
 
     # misc
     day_count: str = DEFAULT_DAY_COUNT

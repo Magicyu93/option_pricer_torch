@@ -264,7 +264,15 @@ def price(
 
     if american:
         lsm_config = lsm or LSMConfig()
-        indices = lsm_mod.exercise_indices(config.n_steps, lsm_config.n_exercise_dates)
+        required: tuple[int, ...] = ()
+        if lsm_config.align_to_dividends and market.dividends:
+            required = lsm_mod.pre_dividend_indices(
+                market.dividends.times(market.as_of, market.day_count),
+                config.n_steps, float(maturity.detach()),
+            )
+        indices = lsm_mod.exercise_indices(
+            config.n_steps, lsm_config.n_exercise_dates, required
+        )
         coefficients = _fit_lsm_policy(
             market, model, maturity, payoff, spec.strike, indices,
             lsm_config, config, device,
@@ -272,7 +280,8 @@ def price(
 
         def pv_of(states, sde, t_grid):
             return lsm_mod.value(
-                sde.asset(states), market.discount.discount(t_grid), payoff,
+                asset_path(sde, states, t_grid, market, maturity),
+                market.discount.discount(t_grid), payoff,
                 spec.strike, indices, lsm_config, coefficients,
             )
     else:
@@ -426,7 +435,8 @@ def _fit_lsm_policy(
             keep_path=True,
         )
         return lsm_mod.fit_policy(
-            sde.asset(states), market.discount.discount(t_grid), intrinsic,
+            asset_path(sde, states, t_grid, market, T),
+            market.discount.discount(t_grid), intrinsic,
             strike, indices, lsm_config,
         )
 
@@ -478,11 +488,19 @@ def _simulate(
     t_grid = T * unit
 
     spot = spot_value.detach().clone().requires_grad_(True)
+
+    # Escrowed-spot model: the lognormal part is the spot less the present value
+    # of the dividends it will pay before expiry. Differentiating still happens
+    # against the *real* spot leaf -- the escrowed amount does not depend on it,
+    # so dS*/dS is one and delta stays a derivative in the observable.
+    diffusing = spot - _dividend_pv(market, torch.zeros_like(spot.detach()), T)
     sde = model.to_sde(market)
     simulator = EulerMaruyamaSimulator(sde)
 
     # In the SDE's own coordinate -- log-spot for GBM -- never raw spot.
-    x0 = model.initial_state(market.with_spot(spot)).expand(config.n_paths, model.n_factors)
+    x0 = model.initial_state(
+        market.with_spot(diffusing)
+    ).expand(config.n_paths, model.n_factors)
 
     if payoff.needs_path or keep_path:
         states = simulator.simulate_with_trajectory(
@@ -498,11 +516,43 @@ def _simulate(
     return states, spot, sde, t_grid
 
 
+def _dividend_pv(market: MarketSnapshot, at: Tensor, T: Tensor) -> Tensor:
+    """PV of the dividends still ahead of each time in ``at``, before expiry."""
+    if not market.dividends:
+        return torch.zeros_like(at)
+    times = market.dividends.times(market.as_of, market.day_count)
+    return market.dividends.pv_remaining(
+        at, times, market.discount, float(T.detach())
+    )
+
+
+def asset_path(sde, states: Tensor, t_grid: Tensor, market: MarketSnapshot, T: Tensor):
+    """Real asset levels along the path: the escrowed process plus the add-back.
+
+    At expiry nothing is left to add, so a European payoff is unaffected beyond
+    its reduced starting point. An interim exercise decision is not: it must be
+    taken against the spot the holder would actually receive.
+    """
+    levels = sde.asset(states)
+    if not market.dividends:
+        return levels
+    add_back = _dividend_pv(market, t_grid, T)
+    # A terminal-only payoff gets levels of shape (n_paths,) and wants the single
+    # add-back at expiry -- which is zero, every dividend before T having been
+    # paid. A retained trajectory is (n_paths, n_steps + 1) and wants the whole
+    # grid broadcast across paths.
+    if levels.dim() == 1:
+        return levels + add_back[-1]
+    return levels + add_back.unsqueeze(0)
+
+
 def _european_pv(
     states: Tensor, sde, payoff: Payoff, t_grid: Tensor, market: MarketSnapshot, T: Tensor
 ) -> Tensor:
     """Discounted payoff per path for a contract that pays only at ``T``."""
-    return market.discount.discount(T) * payoff(sde.asset(states), t_grid)
+    return market.discount.discount(T) * payoff(
+        asset_path(sde, states, t_grid, market, T), t_grid
+    )
 
 
 def _gamma(
