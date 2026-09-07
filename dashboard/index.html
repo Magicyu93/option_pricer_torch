@@ -1,0 +1,344 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>torch_pricer dashboard</title>
+<style>
+  :root{
+    color-scheme: light;
+    --bg:#fcfcfb; --panel:#ffffff; --line:#e6e5e0; --grid:#d8d7d2;
+    --ink:#0b0b0b; --ink2:#52514e; --ink3:#86847c;
+    --blue:#2a78d6; --orange:#eb6834; --aqua:#1baf7a; --red:#e34948; --amber:#eda100;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+    color-scheme: dark;
+    --bg:#161615; --panel:#1e1e1c; --line:#32312d; --grid:#32312d;
+    --ink:#ffffff; --ink2:#c3c2b7; --ink3:#8e8c82;
+    --blue:#3987e5; --orange:#d95926; --aqua:#199e70; --red:#e66767; --amber:#c98500;
+  }}
+  :root[data-theme="dark"]{
+    color-scheme: dark;
+    --bg:#161615; --panel:#1e1e1c; --line:#32312d; --grid:#32312d;
+    --ink:#ffffff; --ink2:#c3c2b7; --ink3:#8e8c82;
+    --blue:#3987e5; --orange:#d95926; --aqua:#199e70; --red:#e66767; --amber:#c98500;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 20px 64px}
+  header{display:flex;flex-wrap:wrap;gap:14px;align-items:baseline;
+         justify-content:space-between;margin-bottom:6px}
+  h1{font-size:19px;margin:0;letter-spacing:-.01em}
+  h1 span{color:var(--ink3);font-weight:400}
+  .sub{color:var(--ink2);font-size:12.5px;margin:0 0 22px}
+  .live{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--ink2);
+        font-family:var(--mono)}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--aqua);
+       box-shadow:0 0 0 0 color-mix(in srgb,var(--aqua) 60%,transparent);
+       animation:pulse 2s infinite}
+  .dot.off{background:var(--ink3);animation:none}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--aqua) 55%,transparent)}
+                   70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
+  @media (prefers-reduced-motion: reduce){ .dot{animation:none} }
+  section{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+          padding:16px 18px;margin-bottom:16px}
+  .head{display:flex;flex-wrap:wrap;gap:10px;align-items:center;
+        justify-content:space-between;margin-bottom:12px}
+  h2{font-size:13px;margin:0;letter-spacing:.02em;text-transform:uppercase;color:var(--ink2)}
+  .why{color:var(--ink3);font-size:12.5px;margin:-4px 0 12px;max-width:78ch}
+  button{font:inherit;font-size:12.5px;padding:5px 12px;border-radius:7px;
+         border:1px solid var(--line);background:var(--bg);color:var(--ink);cursor:pointer}
+  button:hover{border-color:var(--ink3)}
+  button[disabled]{opacity:.5;cursor:progress}
+  button.go{background:var(--blue);border-color:var(--blue);color:#fff}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:10px}
+  .tile{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--bg)}
+  .tile .k{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink3)}
+  .tile .v{font-family:var(--mono);font-size:15px;margin-top:3px;word-break:break-all}
+  table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px}
+  th,td{text-align:right;padding:5px 8px;border-bottom:1px solid var(--line);
+        white-space:nowrap}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--ink3);font-weight:600;font-size:11px;text-transform:uppercase;
+     letter-spacing:.03em}
+  .scroll{overflow-x:auto}
+  .stage{display:grid;grid-template-columns:14px 128px 1fr;gap:10px;align-items:baseline;
+         padding:6px 0;border-bottom:1px solid var(--line)}
+  .stage:last-child{border-bottom:0}
+  .stage .n{font-family:var(--mono);font-size:12px;color:var(--ink2)}
+  .stage .d{font-family:var(--mono);font-size:12.5px}
+  .stage .note{color:var(--ink3);font-size:12px;display:block;font-family:inherit}
+  .ok{color:var(--aqua)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .muted{color:var(--ink3)}
+  pre{font-family:var(--mono);font-size:12px;background:var(--bg);border:1px solid var(--line);
+      border-radius:7px;padding:10px;overflow-x:auto;margin:8px 0 0;color:var(--ink2)}
+  .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .pill{font-family:var(--mono);font-size:11.5px;padding:2px 8px;border-radius:20px;
+        border:1px solid var(--line);color:var(--ink2)}
+  .pill.ok{border-color:var(--aqua);color:var(--aqua)}
+  .pill.bad{border-color:var(--red);color:var(--red)}
+  .stamp{font-family:var(--mono);font-size:11px;color:var(--ink3)}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
+  .modgroup{margin-bottom:10px}
+  .modgroup h3{font-size:12px;font-family:var(--mono);margin:0 0 4px;color:var(--blue)}
+  .mod{font-family:var(--mono);font-size:12px;color:var(--ink2);
+       display:flex;justify-content:space-between;gap:10px;padding:1px 0}
+  #testlog{max-height:220px;overflow-y:auto;white-space:pre-wrap}
+  .stage.new{animation:slide .28s ease-out}
+  @keyframes slide{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
+  @media (prefers-reduced-motion: reduce){ .stage.new{animation:none} }
+  a.pill:hover{border-color:var(--blue);color:var(--blue)}
+</style>
+
+<div class="wrap">
+<header>
+  <div>
+    <h1>torch_pricer <span id="branch"></span></h1>
+    <p class="sub" id="commit">loading…</p>
+  </div>
+  <div class="live"><span class="dot" id="dot"></span><span id="clock">—</span>
+    <a href="/docs" target="_blank" class="pill" style="text-decoration:none">API docs</a>
+    <button id="toggle">pause</button></div>
+</header>
+
+<section>
+  <div class="head"><h2>Environment</h2><span class="stamp" id="envstamp"></span></div>
+  <div class="tiles" id="env"></div>
+</section>
+
+<section>
+  <div class="head"><h2>Market data connection</h2>
+    <div class="row">
+      <button id="btn-conn-live" class="go">Test live fetch</button>
+      <span class="stamp" id="connstamp"></span>
+    </div>
+  </div>
+  <p class="why">The one question a hosted page could never answer. This asks Massive
+     for the <code>I:SPX</code> chain using the key in this process's environment —
+     nothing is echoed back but the result.</p>
+  <div id="conn"><span class="muted">not tested yet</span></div>
+</section>
+
+<section>
+  <div class="head"><h2>Pipeline</h2>
+    <div class="row">
+      <button id="btn-pipe-syn">Run on synthetic</button>
+      <button id="btn-pipe-live" class="go">Run on live chain</button>
+      <span class="stamp" id="pipestamp"></span>
+    </div>
+  </div>
+  <p class="why">Chain → clean → arbitrage screen → parity forwards → curves → implied
+     vols → OTM filter → SVI fit. The parity step uses no rate curve and no dividend
+     estimate, so a residual afterwards is the model's and not the curve's.</p>
+  <div id="pipe"><span class="muted">not run yet</span></div>
+  <div class="scroll"><table id="fwd" hidden></table></div>
+</section>
+
+<section>
+  <div class="head"><h2>Cross-method agreement</h2>
+    <div class="row"><button id="btn-eng">Reprice every way</button>
+      <span class="stamp" id="engstamp"></span></div>
+  </div>
+  <p class="why">One contract, priced by every method the package has. An American put
+     has no closed form, so agreement between a lattice, a PDE solver and a simulation
+     that share no arithmetic is the strongest available statement that any is right.</p>
+  <div class="scroll"><div id="eng"><span class="muted">not run yet</span></div></div>
+</section>
+
+<div class="grid2">
+<section>
+  <div class="head"><h2>Test suite</h2>
+    <div class="row"><button id="btn-tests">Run (CPU, ~90s)</button>
+      <span class="stamp" id="teststamp"></span></div>
+  </div>
+  <div id="tests"><span class="muted">not run yet</span></div>
+  <pre id="testlog" hidden></pre>
+</section>
+
+<section>
+  <div class="head"><h2>Modules</h2><span class="stamp" id="mapstamp"></span></div>
+  <div id="map"><span class="muted">loading…</span></div>
+</section>
+</div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const now = () => new Date().toLocaleTimeString();
+let live = true, pulseStream = null;
+
+async function get(path){
+  const r = await fetch(path, {cache:'no-store'});
+  if(!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+const tile = (k,v,cls='') =>
+  `<div class="tile"><div class="k">${esc(k)}</div><div class="v ${cls}">${esc(v)}</div></div>`;
+
+function applyPulse(p){
+  $('clock').textContent = p.time;
+  $('dot').classList.remove('off');
+  (p.devices||[]).forEach((d,i)=>{
+    const el = document.querySelector(`[data-gpu="${i}"]`);
+    if(el) el.textContent = `${(d.free_mb/1024).toFixed(1)} / ${(d.total_mb/1024).toFixed(1)} GB free`;
+  });
+  const k = document.querySelector('[data-key]');
+  if(k){ k.textContent = p.key_set.length ? p.key_set.join(', ') : 'not set';
+         k.className = 'v ' + (p.key_set.length ? 'ok' : 'bad'); }
+}
+
+// The heartbeat is pushed by the server, not polled for.
+function openPulse(){
+  if(pulseStream) pulseStream.close();
+  pulseStream = new EventSource('/api/stream/pulse');
+  pulseStream.onmessage = e => { if(live) applyPulse(JSON.parse(e.data)); };
+  pulseStream.onerror = () => { $('dot').classList.add('off');
+                                $('clock').textContent = 'server down'; };
+}
+
+async function loadEnv(){
+  try{
+    const e = await get('/api/env');
+    $('branch').textContent = e.branch ? '· ' + e.branch : '';
+    $('commit').textContent = e.commit || '';
+    let html = tile('python', e.python) + tile('torch', e.torch || e.torch_error || '—');
+    html += `<div class="tile"><div class="k">api key</div><div class="v" data-key>${
+      e.key_set.length ? esc(e.key_set.join(', ')) : 'not set'}</div></div>`;
+    (e.devices||[]).forEach((d,i)=>{ html += `<div class="tile"><div class="k">${esc(d.name)}</div>
+      <div class="v" data-gpu="${i}">${(d.free_mb/1024).toFixed(1)} / ${(d.total_mb/1024).toFixed(1)} GB free</div></div>`; });
+    if(!(e.devices||[]).length) html += tile('cuda','unavailable');
+    $('env').innerHTML = html;
+    $('envstamp').textContent = 'read ' + now();
+  }catch(err){ $('env').innerHTML = `<span class="bad">${esc(err.message)}</span>`; }
+}
+
+async function loadMap(){
+  try{
+    const m = await get('/api/map');
+    $('map').innerHTML = Object.keys(m.groups).sort().map(g => {
+      const rows = m.groups[g].map(x =>
+        `<div class="mod"><span class="${x.ok?'':'bad'}">${x.ok?'':'✗ '}${
+          esc(x.module.replace('torch_pricer.',''))}</span><span class="muted">${x.lines}</span></div>`
+        + (x.ok ? '' : `<pre>${esc(x.error)}</pre>`)).join('');
+      return `<div class="modgroup"><h3>${esc(g)}</h3>${rows}</div>`;
+    }).join('');
+    $('mapstamp').textContent = 'read ' + now();
+  }catch(err){ $('map').innerHTML = `<span class="bad">${esc(err.message)}</span>`; }
+}
+
+function busy(btn,on){ btn.disabled=on; btn.dataset.label ||= btn.textContent;
+  btn.textContent = on ? 'running…' : btn.dataset.label; }
+
+async function testConnection(){
+  const btn = $('btn-conn-live'); busy(btn,true);
+  $('conn').innerHTML = '<span class="muted">contacting Massive…</span>';
+  try{
+    const c = await get('/api/connection?live=true');
+    if(c.mode === 'ok'){
+      $('conn').innerHTML = `<div class="row"><span class="pill ok">connected</span>
+        <span class="pill">${esc(c.elapsed)}s</span><span class="pill">key: ${esc(c.key_var)}</span></div>
+        <div class="tiles" style="margin-top:10px">${tile('ticker',c.ticker)}
+        ${tile('spot',Number(c.spot).toLocaleString())}
+        ${tile('quotes',Number(c.quotes).toLocaleString())}${tile('expiries',c.expiries)}
+        ${tile('as of',c.as_of)}</div>
+        <pre>first expiries: ${esc((c.first_expiries||[]).join('  '))}</pre>`;
+    } else {
+      $('conn').innerHTML = `<div class="row"><span class="pill bad">${esc(c.mode)}</span>${
+        c.elapsed?`<span class="pill">${esc(c.elapsed)}s</span>`:''}</div>
+        <pre>${esc(c.error || c.detail || 'no detail')}</pre>${c.trace?`<pre>${esc(c.trace)}</pre>`:''}`;
+    }
+    $('connstamp').textContent = 'tested ' + now();
+  }catch(err){ $('conn').innerHTML = `<span class="bad">${esc(err.message)}</span>`; }
+  busy(btn,false);
+}
+
+// Stages appear as the server finishes them, rather than all at the end.
+function runPipeline(isLive){
+  const btn = isLive ? $('btn-pipe-live') : $('btn-pipe-syn');
+  busy(btn,true); $('fwd').hidden = true;
+  $('pipe').innerHTML = '<div class="row" style="margin-bottom:8px"><span class="pill">streaming…</span></div>';
+  const es = new EventSource('/api/stream/pipeline?live=' + (isLive ? 'true' : 'false'));
+  es.onmessage = ev => {
+    const e = JSON.parse(ev.data);
+    if(e.type === 'stage'){
+      $('pipe').insertAdjacentHTML('beforeend', `<div class="stage new">
+        <span class="${e.ok?'ok':'bad'}">${e.ok?'✔':'✘'}</span>
+        <span class="n">${esc(e.name)}</span>
+        <span class="d">${esc(e.detail)}<span class="note">${esc(e.note||'')}</span></span></div>`);
+      return;
+    }
+    $('pipe').querySelector('.pill').outerHTML =
+      `<span class="pill ${e.ok?'ok':'bad'}">${e.ok?'completed':'failed'}</span>` +
+      (e.source ? `<span class="pill">${esc(e.source)}</span>` : '');
+    if(e.trace) $('pipe').insertAdjacentHTML('beforeend', `<pre>${esc(e.trace)}</pre>`);
+    if(e.forwards && e.forwards.length){
+      $('fwd').hidden = false;
+      $('fwd').innerHTML = `<tr><th>expiry</th><th>T</th><th>forward</th><th>discount</th>
+        <th>zero</th><th>pairs</th><th>parity resid</th><th>ATM vol</th></tr>` +
+        e.forwards.map(f => `<tr><td>${esc(f.expiry)}</td><td>${f.t.toFixed(4)}</td>
+          <td>${f.forward.toLocaleString(undefined,{minimumFractionDigits:2})}</td>
+          <td>${f.discount.toFixed(6)}</td><td>${(f.zero*100).toFixed(3)}%</td>
+          <td>${f.pairs}</td><td>${f.residual.toExponential(1)}</td>
+          <td>${(f.atm_vol*100).toFixed(2)}%</td></tr>`).join('');
+    }
+    $('pipestamp').textContent = 'ran ' + now();
+    es.close(); busy(btn,false);
+  };
+  es.onerror = () => { es.close(); busy(btn,false);
+    $('pipe').insertAdjacentHTML('beforeend','<span class="bad">stream interrupted</span>'); };
+}
+
+async function runEngines(){
+  const btn = $('btn-eng'); busy(btn,true);
+  $('eng').innerHTML = '<span class="muted">pricing…</span>';
+  try{
+    const e = await get('/api/engines');
+    $('eng').innerHTML = `<table><tr><th>contract</th><th>analytic</th><th>tree</th><th>PDE</th>
+      <th>Monte Carlo</th><th>MC stderr</th><th>spread</th></tr>` + e.rows.map(r =>
+      `<tr><td>${esc(r.contract)}</td>
+       <td>${r.analytic!==undefined?r.analytic.toFixed(5):'<span class="muted">none</span>'}</td>
+       <td>${r.tree.toFixed(5)}</td><td>${r.pde.toFixed(5)}</td><td>${r.monte_carlo.toFixed(5)}</td>
+       <td class="muted">${r.mc_stderr.toFixed(5)}</td>
+       <td class="${r.spread<0.05?'ok':'warn'}">${r.spread.toFixed(5)}</td></tr>`).join('') + '</table>';
+    $('engstamp').textContent = 'ran ' + now();
+  }catch(err){ $('eng').innerHTML = `<span class="bad">${esc(err.message)}</span>`; }
+  busy(btn,false);
+}
+
+// pytest's own output, forwarded line by line while it runs.
+function runTests(){
+  const btn = $('btn-tests'); busy(btn,true);
+  const log = $('testlog'); log.hidden = false; log.textContent = '';
+  $('tests').innerHTML = '<div class="row"><span class="pill">running…</span><span class="pill" id="tclock">0.0s</span></div>';
+  const es = new EventSource('/api/stream/tests');
+  es.onmessage = ev => {
+    const e = JSON.parse(ev.data);
+    if(e.type === 'line'){
+      log.textContent += e.text + '\n'; log.scrollTop = log.scrollHeight;
+      const c = $('tclock'); if(c) c.textContent = e.elapsed + 's';
+      return;
+    }
+    const good = e.returncode === 0;
+    $('tests').innerHTML = `<div class="row"><span class="pill ${good?'ok':'bad'}">${
+      good?'green':'failures'}</span><span class="pill">${esc(e.elapsed)}s</span></div>
+      <pre>${esc(e.summary || e.error || '')}</pre>` +
+      ((e.failures||[]).length ? `<pre>${esc(e.failures.join('\n'))}</pre>` : '');
+    $('teststamp').textContent = 'ran ' + now();
+    es.close(); busy(btn,false);
+  };
+  es.onerror = () => { es.close(); busy(btn,false); };
+}
+
+$('btn-conn-live').onclick = testConnection;
+$('btn-pipe-syn').onclick = () => runPipeline(false);
+$('btn-pipe-live').onclick = () => runPipeline(true);
+$('btn-eng').onclick = runEngines;
+$('btn-tests').onclick = runTests;
+$('toggle').onclick = () => { live = !live;
+  $('toggle').textContent = live ? 'pause' : 'resume';
+  $('dot').classList.toggle('off', !live); };
+
+loadEnv(); loadMap(); openPulse(); runPipeline(false);
+setInterval(() => { if(live) loadEnv(); }, 15000);
+</script>
