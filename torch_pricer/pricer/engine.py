@@ -39,6 +39,7 @@ first-order greeks stay exact.
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import dataclass, field
 from typing import Sequence
 
@@ -139,17 +140,55 @@ class PricingResult:
         return f"PricingResult({self.price:.6f} +/- {self.stderr:.6f}{risk})"
 
 
+#: Cached ``(usable, why not)`` from the first CUDA probe of the process.
+_CUDA_PROBE: tuple[bool, str] | None = None
+
+
+def _cuda_available() -> tuple[bool, str]:
+    """``(usable, why not)``. Probing CUDA can warn; the caller decides if that matters.
+
+    Cached, and not only to save the call. Torch emits its diagnostic exactly
+    once per process, so without this the *first* probe would capture the reason
+    and every later one would see silence -- meaning an explicit
+    ``device="cuda"`` would report a bare failure purely because something had
+    already asked for ``"auto"``. Whether CUDA works does not change inside a
+    process; fixing a driver mismatch takes a reboot.
+    """
+    global _CUDA_PROBE
+    if _CUDA_PROBE is None:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            usable = torch.cuda.is_available()
+        reason = "; ".join(str(w.message).split("\n")[0] for w in caught)
+        _CUDA_PROBE = (usable, reason)
+    return _CUDA_PROBE
+
+
 def resolve_device(name: str = "auto") -> torch.device:
     """Pick a device, degrading to CPU when CUDA was asked for but is unusable.
 
     ``torch.cuda.is_available()`` is False for a driver mismatch as readily as
     for a machine with no GPU, so ``"auto"`` must not assume.
+
+    A driver/library mismatch -- the userspace NVIDIA libraries not matching the
+    loaded kernel module, which is what a driver upgrade without a reboot leaves
+    behind -- makes that probe emit a ``UserWarning`` before returning False.
+    Under ``"auto"`` falling back to CPU *is* the contract, so the warning is
+    swallowed rather than printed on every run. Under an explicit
+    ``device="cuda"`` it is the answer to the question the caller asked, so it
+    is carried into the error instead.
     """
     if name == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        usable, _ = _cuda_available()
+        return torch.device("cuda" if usable else "cpu")
     device = torch.device(name)
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise PricingError("device='cuda' requested but no usable CUDA device is present")
+    if device.type == "cuda":
+        usable, reason = _cuda_available()
+        if not usable:
+            detail = f": {reason}" if reason else ""
+            raise PricingError(
+                f"device='cuda' requested but no usable CUDA device is present{detail}"
+            )
     return device
 
 

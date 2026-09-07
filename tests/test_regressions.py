@@ -11,7 +11,7 @@ import math
 import pytest
 import torch
 
-from torch_pricer.errors import ValidationError
+from torch_pricer.errors import PricingError, ValidationError
 from torch_pricer.instruments.payoff import payoff_for
 from torch_pricer.instruments.spec import (
     AsianOption,
@@ -203,3 +203,47 @@ def test_geometric_asian_matches_closed_form(market):
         math.exp(m + 0.5 * v) * _norm_cdf(d1) - 100.0 * _norm_cdf(d1 - sv)
     )
     assert abs(res.price - expected) < 3 * res.stderr
+
+
+def test_auto_device_is_quiet_about_an_unusable_gpu():
+    """A driver/library mismatch makes torch warn on every CUDA probe.
+
+    Degrading to CPU is what ``device="auto"`` promises, so the warning is noise
+    there -- it turned up unfiltered on every run on a machine whose NVIDIA
+    kernel module and userspace libraries had drifted apart.
+    """
+    import warnings as _warnings
+
+    import torch_pricer.pricer.engine as engine
+
+    engine._CUDA_PROBE = None  # force a real probe
+    try:
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            device = engine.resolve_device("auto")
+        assert device.type in ("cuda", "cpu")
+        assert [w for w in caught if "CUDA" in str(w.message)] == []
+    finally:
+        engine._CUDA_PROBE = None
+
+
+def test_explicit_cuda_reports_why_it_is_unavailable():
+    """The reason must survive an earlier "auto" probe.
+
+    Torch emits its diagnostic once per process, so without caching, asking for
+    ``"auto"`` first would silently strip the explanation off a later explicit
+    request.
+    """
+    import torch
+    import torch_pricer.pricer.engine as engine
+
+    if torch.cuda.is_available():
+        pytest.skip("CUDA is usable here, so there is no failure to explain")
+
+    engine._CUDA_PROBE = None
+    try:
+        engine.resolve_device("auto")  # consumes torch's one-shot warning
+        with pytest.raises(PricingError, match="no usable CUDA device"):
+            engine.resolve_device("cuda")
+    finally:
+        engine._CUDA_PROBE = None
