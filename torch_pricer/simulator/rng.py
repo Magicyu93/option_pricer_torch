@@ -10,6 +10,8 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
+from torch_pricer.tensors import DEFAULT_DTYPE
+
 from torch_pricer.errors import ValidationError
 
 
@@ -59,7 +61,7 @@ class NormalDraws:
         self.n_factors = int(n_factors)
         self.antithetic = bool(antithetic)
         self.device = torch.device(device) if device is not None else torch.device("cpu")
-        self.dtype = dtype or torch.get_default_dtype()
+        self.dtype = dtype or DEFAULT_DTYPE
         self.generator = torch.Generator(device=self.device).manual_seed(int(seed))
 
     def draw(self, n_steps: int) -> Tensor:

@@ -169,11 +169,8 @@ def test_snapshot_repr_works(market):
 
 
 def test_unimplemented_things_raise_rather_than_return():
-    from torch_pricer.black_formula import implied_vol
     from torch_pricer.simulator.brownian_bridge import BrownianBridge
 
-    with pytest.raises(NotImplementedError):
-        implied_vol(1.0, 100.0, 100.0, 1.0)
     with pytest.raises(NotImplementedError):
         BrownianBridge(0.0, 0.2).drift_coefficient(torch.zeros(2, 1), torch.tensor(0.0))
     with pytest.raises(NotImplementedError):

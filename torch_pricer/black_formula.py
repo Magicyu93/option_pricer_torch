@@ -75,23 +75,69 @@ def implied_vol(
     max_newton: int = 12,
     max_bisect: int = 60,
     vol_bounds: tuple[float, float] = (1e-4, 5.0),
-    vol_tolerance: float = 1e-5,
 ):
-    '''
-    Vectorised Black implied vol. ``nan`` where no volatility reproduces the price.
+    """Vectorised Black implied vol. ``nan`` where no volatility reproduces the price.
 
-    :param price:
-    :param forward:
-    :param strike:
-    :param t:
-    :param discount:
-    :param right:
-    :param tol:
-    :param max_newton:
-    :param max_bisect:
-    :param vol_bounds:
-    :param vol_tolerance:
-    :return:
-    '''
+    Newton first, because vega is analytic and the iteration is quadratic near
+    the root; bisection afterwards for whatever Newton left, because vega
+    collapses far from the money and a Newton step there can leap outside the
+    bracket entirely. Bisection cannot fail once the price is inside the
+    no-arbitrage bounds, so the two together always land.
 
-    raise NotImplementedError("implied_vol")
+    Prices outside ``[intrinsic, forward bound]`` come back ``nan`` rather than
+    clamped: there is no such volatility, and returning the nearest one would
+    launder an arbitrage into a plausible number. A price *on* either bound is
+    ``nan`` for the same reason -- an option with no time value has no
+    recoverable vol, since vega there is zero to machine precision and every
+    volatility over a wide range reproduces the same double.
+    """
+    price, forward, strike, t, discount, w = np.broadcast_arrays(
+        *(np.asarray(x, dtype=float) for x in (price, forward, strike, t, discount, right))
+    )
+    price, forward, strike = price.copy(), forward.copy(), strike.copy()
+    t = np.maximum(t, _EPS)
+
+    lo, hi = vol_bounds
+    # No-arbitrage bounds: a call is worth between its intrinsic and the
+    # discounted forward; a put between intrinsic and the discounted strike.
+    floor = np.maximum(discount * w * (forward - strike), 0.0)
+    cap = discount * np.where(w > 0, forward, strike)
+    # Strictly interior: on the bound there is no time value, hence no vol.
+    feasible = (price > floor + tol) & (price < cap - tol)
+
+    vol = np.full(price.shape, np.nan, dtype=float)
+    # Brenner-Subrahmanyam: exact at the money, a good bracket-interior start
+    # everywhere else.
+    guess = np.sqrt(2.0 * np.pi / t) * np.divide(
+        price, discount * forward, out=np.zeros_like(price), where=discount * forward > 0
+    )
+    x = np.clip(np.where(np.isfinite(guess) & (guess > 0), guess, 0.2), lo, hi)
+
+    active = feasible.copy()
+    for _ in range(max_newton):
+        if not active.any():
+            break
+        err = black_price(forward, strike, t, x, discount, w) - price
+        v = black_vega(forward, strike, t, x, discount)
+        done = np.abs(err) < tol
+        active &= ~done
+        step = np.divide(err, v, out=np.zeros_like(err), where=v > _EPS)
+        nxt = x - step
+        # A Newton step is only trusted while it stays inside the bracket.
+        ok = active & np.isfinite(nxt) & (nxt > lo) & (nxt < hi) & (v > _EPS)
+        x = np.where(ok, nxt, x)
+        active &= ok
+
+    vol = np.where(feasible, x, np.nan)
+    err = black_price(forward, strike, t, x, discount, w) - price
+    stubborn = feasible & (np.abs(err) > tol)
+    if stubborn.any():
+        a = np.full(price.shape, lo)
+        b = np.full(price.shape, hi)
+        for _ in range(max_bisect):
+            mid = 0.5 * (a + b)
+            f = black_price(forward, strike, t, mid, discount, w) - price
+            a = np.where(f < 0.0, mid, a)
+            b = np.where(f < 0.0, b, mid)
+        vol = np.where(stubborn, 0.5 * (a + b), vol)
+    return vol

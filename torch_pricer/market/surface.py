@@ -69,24 +69,6 @@ class FlatVolSurface(VolSurface):
         return f"FlatVolSurface({float(self.level.detach()):.4f}, {self._ref})"
 
 
-class SVISurface(VolSurface):
-    """Gatheral SVI, one slice per expiry. Not implemented yet.
-
-    When it lands, the slice parameters ``(a, b, rho, m, sigma)`` must be
-    ``nn.Parameter`` s: they are what bucketed vega differentiates against
-    before being chained back to quote sensitivities through the slice fit.
-    """
-
-    def __init__(self, as_of: dt.date):
-        super().__init__()
-        self._ref = as_of
-
-    def vol(self, strike, expiry) -> Tensor:
-        raise NotImplementedError("SVISurface.vol")
-
-    def total_variance(self, k, expiry) -> Tensor:
-        raise NotImplementedError("SVISurface.total_variance")
-
-    @property
-    def reference_date(self) -> dt.date:
-        return self._ref
+# The real SVI implementation lives in :mod:`torch_pricer.market.svi`, which
+# needs the analytic k-derivatives of total variance that Dupire consumes and so
+# carries more machinery than this module's minimal surface interface.

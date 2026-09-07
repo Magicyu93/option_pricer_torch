@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 import torch.nn as nn
 from torch import Tensor
 
-from torch_pricer.inputs import CalibrationInputs
+from torch_pricer.calibration.inputs import CalibrationInputs
 from torch_pricer.market.snapshot import MarketSnapshot
 from torch_pricer.simulator.simulator import SDE
 
@@ -42,7 +42,7 @@ class Model(nn.Module, ABC):
         One argument rather than a list of them because the models differ in
         what they consume -- premiums, an implied surface, or both plus a
         simulation -- while agreeing on the market state they need; see
-        :class:`~torch_pricer.inputs.CalibrationInputs`.
+        :class:`~torch_pricer.calibration.inputs.CalibrationInputs`.
 
         Note for the models still to come: for Black-Scholes the parameter *is*
         the quoted vol, so ``dV/d(parameter)`` is vega. For Heston or local vol
