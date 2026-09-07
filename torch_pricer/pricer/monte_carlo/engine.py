@@ -38,6 +38,7 @@ first-order greeks stay exact.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import warnings
 from dataclasses import dataclass, field
@@ -47,8 +48,10 @@ import torch
 from torch import Tensor
 
 from torch_pricer.errors import PricingError, ValidationError
-from torch_pricer.instruments.payoff import Payoff, payoff_for
-from torch_pricer.instruments.spec import Instrument
+from torch_pricer.instruments.payoff import Payoff, intrinsic_for, payoff_for
+from torch_pricer.instruments.spec import Instrument, Style, VanillaOption
+from torch_pricer.pricer.monte_carlo import lsm as lsm_mod
+from torch_pricer.pricer.monte_carlo.lsm import LSMConfig
 from torch_pricer.market.snapshot import MarketSnapshot
 from torch_pricer.models.base import Model
 from torch_pricer.simulator.monte_carlo.rng import NormalDraws
@@ -198,6 +201,7 @@ def price(
     model: Model,
     config: MCConfig | None = None,
     greeks: Sequence[str] = (),
+    lsm: LSMConfig | None = None,
 ) -> PricingResult:
     """Price one instrument by Monte Carlo under a market snapshot.
 
@@ -207,6 +211,8 @@ def price(
         model: calibrated model for the underlying stock
         config: Monte Carlo settings; defaults to :class:`MCConfig`
         greeks: any of :data:`SUPPORTED_GREEKS`
+        lsm: exercise-policy settings, used only for an American contract;
+            defaults to :class:`~torch_pricer.pricer.monte_carlo.lsm.LSMConfig`
 
     Returns:
         The discounted expected payoff *per unit of underlying* -- the contract
@@ -224,7 +230,17 @@ def price(
         )
 
     device = resolve_device(config.device)
-    payoff = payoff_for(spec)
+
+    # An early-exercisable contract takes a different route: payoff_for refuses
+    # it outright, and rightly, so the intrinsic is asked for explicitly instead.
+    american = isinstance(spec, VanillaOption) and spec.style is Style.AMERICAN
+    if isinstance(spec, VanillaOption) and spec.style is Style.BERMUDAN:
+        raise ValidationError(
+            "Bermudan exercise needs its dates aligned to the simulation grid, "
+            "which is not wired up; use Style.AMERICAN with "
+            "LSMConfig.n_exercise_dates for a fixed number of evenly spaced dates"
+        )
+    payoff = intrinsic_for(spec) if american else payoff_for(spec)
     market = market.to(device=device, dtype=config.dtype)
     model = model.to(device=device, dtype=config.dtype)  # nn.Module.to: in place
 
@@ -246,9 +262,28 @@ def price(
         dtype=config.dtype,
     ).draw(config.n_steps)
 
-    pv, spot, _ = _simulate(
-        market, model, maturity, market.spot, payoff, draws, config, device
+    if american:
+        lsm_config = lsm or LSMConfig()
+        indices = lsm_mod.exercise_indices(config.n_steps, lsm_config.n_exercise_dates)
+        coefficients = _fit_lsm_policy(
+            market, model, maturity, payoff, spec.strike, indices,
+            lsm_config, config, device,
+        )
+
+        def pv_of(states, sde, t_grid):
+            return lsm_mod.value(
+                sde.asset(states), market.discount.discount(t_grid), payoff,
+                spec.strike, indices, lsm_config, coefficients,
+            )
+    else:
+        def pv_of(states, sde, t_grid):
+            return _european_pv(states, sde, payoff, t_grid, market, maturity)
+
+    states, spot, sde, t_grid = _simulate(
+        market, model, maturity, market.spot, payoff, draws, config, device,
+        keep_path=american,
     )
+    pv = pv_of(states, sde, t_grid)
     expected = pv.mean()
 
     leaves: dict[str, Tensor] = {}
@@ -285,7 +320,10 @@ def price(
         }
 
     if "gamma" in greeks:
-        risk["gamma"] = _gamma(market, model, payoff, draws, maturity, config, device)
+        risk["gamma"] = _gamma(
+            market, model, payoff, draws, maturity, config, device, pv_of,
+            keep_path=american,
+        )
 
     return PricingResult(
         price=float(expected.detach()),
@@ -348,6 +386,51 @@ def _gamma_autograd(expected: Tensor, spot: Tensor) -> float:
     return 0.0 if curvature is None else float(curvature.detach())
 
 
+def _fit_lsm_policy(
+    market: MarketSnapshot,
+    model: Model,
+    T: Tensor,
+    intrinsic: Payoff,
+    strike: float,
+    indices: list[int],
+    lsm_config: LSMConfig,
+    config: MCConfig,
+    device: torch.device,
+) -> dict[int, Tensor]:
+    """Fit the exercise policy, on independent paths when asked for.
+
+    Separate draws, separate seed. Fitting and exercising on one sample lets the
+    policy see each path's own future and exercise with hindsight, which biases
+    the price upward; the split costs one extra simulation and buys a number that
+    is honestly a lower bound.
+    """
+    n_paths = lsm_config.policy_paths
+    if n_paths is None:
+        n_paths = config.n_paths
+        seed = config.seed
+    else:
+        seed = lsm_config.policy_seed
+    if config.antithetic and n_paths % 2:
+        n_paths += 1
+
+    draws = NormalDraws(
+        n_paths=n_paths, n_factors=model.n_factors, seed=seed,
+        antithetic=config.antithetic, device=device, dtype=config.dtype,
+    ).draw(config.n_steps)
+    # _simulate sizes the initial state from the config, not from the draws, so
+    # the policy run needs a config that agrees with its own path count.
+    policy_config = dataclasses.replace(config, n_paths=n_paths, seed=seed)
+    with torch.no_grad():
+        states, _, sde, t_grid = _simulate(
+            market, model, T, market.spot, intrinsic, draws, policy_config, device,
+            keep_path=True,
+        )
+        return lsm_mod.fit_policy(
+            sde.asset(states), market.discount.discount(t_grid), intrinsic,
+            strike, indices, lsm_config,
+        )
+
+
 def _stderr(pv: Tensor, antithetic: bool) -> float:
     """Standard error of the mean, respecting antithetic pairing.
 
@@ -373,11 +456,20 @@ def _simulate(
     draws: Tensor,
     config: MCConfig,
     device: torch.device,
-) -> tuple[Tensor, Tensor, object]:
-    """One simulation at ``spot_value``. Returns ``(discounted payoffs, spot leaf, sde)``.
+    keep_path: bool = False,
+) -> tuple[Tensor, Tensor, object, Tensor]:
+    """One simulation at ``spot_value``. Returns ``(states, spot leaf, sde, t_grid)``.
 
     The spot is rebuilt as a fresh graph leaf on every call, so repricing at a
     bumped spot cannot entangle with the base run's graph.
+
+    Discounting is deliberately *not* applied here. A European payoff pays once,
+    at ``T``, and one discount factor covers every path; an early-exercisable one
+    pays at a stopping time that differs path by path, so there is no single
+    factor to apply. Leaving it to the caller is what lets both share this.
+
+    ``keep_path`` forces the whole trajectory to be retained even when the payoff
+    would not need it -- Longstaff-Schwartz regresses on the path, so it does.
     """
     # Built multiplicatively rather than with ``torch.linspace(0, T, ...)``:
     # linspace's endpoint is a scalar, so a tensor T would be coerced and the
@@ -392,7 +484,7 @@ def _simulate(
     # In the SDE's own coordinate -- log-spot for GBM -- never raw spot.
     x0 = model.initial_state(market.with_spot(spot)).expand(config.n_paths, model.n_factors)
 
-    if payoff.needs_path:
+    if payoff.needs_path or keep_path:
         states = simulator.simulate_with_trajectory(
             x0, t_grid, draws, progress=config.progress,
             checkpoint_segments=config.checkpoint_segments,
@@ -403,8 +495,14 @@ def _simulate(
             checkpoint_segments=config.checkpoint_segments,
         )
 
-    pv = market.discount.discount(T) * payoff(sde.asset(states), t_grid)
-    return pv, spot, sde
+    return states, spot, sde, t_grid
+
+
+def _european_pv(
+    states: Tensor, sde, payoff: Payoff, t_grid: Tensor, market: MarketSnapshot, T: Tensor
+) -> Tensor:
+    """Discounted payoff per path for a contract that pays only at ``T``."""
+    return market.discount.discount(T) * payoff(sde.asset(states), t_grid)
 
 
 def _gamma(
@@ -415,14 +513,25 @@ def _gamma(
     T: Tensor,
     config: MCConfig,
     device: torch.device,
+    pv_of,
+    keep_path: bool = False,
 ) -> float:
-    """Central difference of the pathwise delta, under common random numbers."""
+    """Central difference of the pathwise delta, under common random numbers.
+
+    Takes the same ``pv_of`` the base price used, so an American contract is
+    differenced through its own exercise policy rather than through a European
+    payoff. The policy is held fixed across the two bumps -- it is common random
+    numbers applied to the decision as well as the draws, and re-fitting at each
+    bumped spot would inject regression noise straight into the difference.
+    """
     h = config.gamma_bump * max(float(market.spot.detach().abs()), 1e-8)
     deltas = []
     for offset in (+h, -h):
-        pv, spot, _ = _simulate(
-            market, model, T, market.spot + offset, payoff, draws, config, device
+        states, spot, sde, t_grid = _simulate(
+            market, model, T, market.spot + offset, payoff, draws, config, device,
+            keep_path=keep_path,
         )
+        pv = pv_of(states, sde, t_grid)
         (d,) = torch.autograd.grad(pv.mean(), [spot], allow_unused=True)
         if d is None:
             raise PricingError("price is not differentiable with respect to spot")

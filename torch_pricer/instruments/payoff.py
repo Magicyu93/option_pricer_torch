@@ -101,6 +101,24 @@ class AsianPayoff(Payoff):
         return torch.clamp_min(self.sign * (mean - self.strike), 0.0)
 
 
+def intrinsic_for(spec: Instrument) -> Payoff:
+    """The immediate-exercise value of a contract that can be exercised early.
+
+    Distinct from :func:`payoff_for`, which refuses a non-European style outright
+    because the Monte Carlo engine cannot price a terminal payoff and call it
+    American. Longstaff-Schwartz needs the *intrinsic* at every exercise date, so
+    it asks for that explicitly rather than being handed a terminal payoff and
+    left to hope. ``EuropeanPayoff`` already computes ``max(w (S - K), 0)``
+    elementwise, so it serves at any shape -- a whole path matrix included.
+    """
+    if isinstance(spec, VanillaOption):
+        return EuropeanPayoff(spec.strike, spec.right)
+    raise ValidationError(
+        f"no intrinsic registered for {type(spec).__name__}; early exercise is "
+        "defined for vanilla options only"
+    )
+
+
 def payoff_for(spec: Instrument) -> Payoff:
     """Map an instrument spec to its payoff."""
     if isinstance(spec, VanillaOption):
