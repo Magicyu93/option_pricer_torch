@@ -96,7 +96,7 @@ def test_bucketed_rho_sums_to_parallel_rho():
         dividend=RateCurve.from_zeros([0.25, 0.5, 1.0, 2.0], [DIV] * 4, "q"),
         vol_surface=MarketSnapshot.flat(AS_OF, SPOT).vol_surface,
     )
-    call = VanillaOption(strike=100.0, maturity=EXPIRY, right=Right.CALL)
+    call = VanillaOption(strike=100.0, maturity=EXPIRY, right=Right.CALL, style=Style.EUROPEAN)
     res = price(call, market, BlackScholesModel(VOL),
                 MCConfig(n_paths=200_000, n_steps=20, seed=7), greeks=("rho",))
     rho = res.greeks["rho"]

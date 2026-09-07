@@ -16,7 +16,7 @@ import datetime as dt
 import torch
 
 from torch_pricer.calibration.svi_fit import fit_slice
-from torch_pricer.instruments.spec import Right, VanillaOption
+from torch_pricer.instruments.spec import Right, Style, VanillaOption
 from torch_pricer.market.snapshot import MarketSnapshot
 from torch_pricer.market.svi import SVISlice, SVISurface
 from torch_pricer.models.local_vol import LocalVolModel
@@ -42,7 +42,7 @@ def main() -> None:
     surface = SVISurface([slice_], forward=market.forward, as_of=AS_OF)
     print("  arbitrage:", {k_: round(v, 5) for k_, v in surface.arbitrage_report().items()})
 
-    spec = VanillaOption(strike=105.0, maturity=EXPIRY, right=Right.CALL)
+    spec = VanillaOption(strike=105.0, maturity=EXPIRY, right=Right.CALL, style=Style.EUROPEAN)
     res = price(
         spec, market, LocalVolModel(surface),
         MCConfig(n_paths=200_000, n_steps=250, seed=11, checkpoint_segments=16),

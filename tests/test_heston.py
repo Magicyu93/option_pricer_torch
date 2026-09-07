@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from torch_pricer.errors import ValidationError
-from torch_pricer.instruments.spec import Right, VanillaOption
+from torch_pricer.instruments.spec import Right, Style, VanillaOption
 from torch_pricer.market.snapshot import MarketSnapshot
 from torch_pricer.models.heston import HestonModel
 from torch_pricer.models.heston_analytic import feller, heston_price
@@ -55,7 +55,7 @@ def test_analytic_put_call_parity(strike):
 
 @pytest.mark.parametrize("strike", [80.0, 100.0, 125.0])
 def test_simulation_matches_the_characteristic_function(strike):
-    spec = VanillaOption(strike=strike, maturity=EXPIRY, right=Right.CALL)
+    spec = VanillaOption(strike=strike, maturity=EXPIRY, right=Right.CALL, style=Style.EUROPEAN)
     res = price(spec, _market(), HestonModel(**PARAMS),
                 MCConfig(n_paths=200_000, n_steps=200, seed=5))
     ref = heston_price(SPOT, strike, 1.0, RATE, DIV, right=1, **PARAMS)
@@ -88,7 +88,7 @@ def test_two_factors_with_the_right_correlation():
 
 
 def test_model_params_greek_covers_every_parameter():
-    spec = VanillaOption(strike=100.0, maturity=EXPIRY, right=Right.CALL)
+    spec = VanillaOption(strike=100.0, maturity=EXPIRY, right=Right.CALL, style=Style.EUROPEAN)
     res = price(spec, _market(), HestonModel(**PARAMS),
                 MCConfig(n_paths=20_000, n_steps=50, seed=5), greeks=("model_params",))
     assert set(res.greeks["model_params"]) == {"v0", "kappa", "theta", "xi", "rho"}
@@ -102,7 +102,7 @@ def test_pathwise_v0_greek_is_accurate_when_feller_holds():
     """
     safe = dict(v0=0.04, kappa=4.0, theta=0.04, xi=0.3, rho=-0.7)
     assert feller(safe["kappa"], safe["theta"], safe["xi"]) > 0
-    spec = VanillaOption(strike=100.0, maturity=EXPIRY, right=Right.CALL)
+    spec = VanillaOption(strike=100.0, maturity=EXPIRY, right=Right.CALL, style=Style.EUROPEAN)
     res = price(spec, _market(), HestonModel(**safe),
                 MCConfig(n_paths=200_000, n_steps=200, seed=5), greeks=("model_params",))
     h = 1e-5

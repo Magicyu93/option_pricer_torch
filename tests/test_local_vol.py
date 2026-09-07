@@ -8,7 +8,7 @@ import torch
 
 from torch_pricer.black_formula import implied_vol
 from torch_pricer.errors import ValidationError
-from torch_pricer.instruments.spec import Right, VanillaOption
+from torch_pricer.instruments.spec import Right, Style, VanillaOption
 from torch_pricer.market.snapshot import MarketSnapshot
 from torch_pricer.market.svi import SVISlice, SVISurface
 from torch_pricer.models.local_vol import LocalVolModel
@@ -65,7 +65,7 @@ def test_dupire_reproduces_the_generating_surface(strike):
     market = _market()
     surface = _surface(market)
     expiry = dt.date(2026, 1, 2)
-    spec = VanillaOption(strike=strike, maturity=expiry, right=Right.CALL)
+    spec = VanillaOption(strike=strike, maturity=expiry, right=Right.CALL, style=Style.EUROPEAN)
 
     res = price(
         spec, market, LocalVolModel(surface),
@@ -84,7 +84,9 @@ def test_price_is_differentiable_in_the_slice_parameters():
     market = _market()
     surface = _surface(market)
     model = LocalVolModel(surface)
-    spec = VanillaOption(strike=100.0, maturity=dt.date(2026, 1, 2), right=Right.CALL)
+    spec = VanillaOption(
+        strike=100.0, maturity=dt.date(2026, 1, 2), right=Right.CALL, style=Style.EUROPEAN
+    )
     res = price(
         spec, market, model, MCConfig(n_paths=20_000, n_steps=50, seed=3),
         greeks=("delta", "model_params"),
@@ -99,7 +101,9 @@ def test_price_is_differentiable_in_the_slice_parameters():
 def test_checkpointing_is_numerically_transparent():
     market = _market()
     model = LocalVolModel(_surface(market))
-    spec = VanillaOption(strike=100.0, maturity=dt.date(2026, 1, 2), right=Right.CALL)
+    spec = VanillaOption(
+        strike=100.0, maturity=dt.date(2026, 1, 2), right=Right.CALL, style=Style.EUROPEAN
+    )
     kw = dict(n_paths=20_000, n_steps=60, seed=3)
     plain = price(spec, market, model, MCConfig(**kw), greeks=("delta",))
     ckpt = price(spec, market, model, MCConfig(checkpoint_segments=8, **kw), greeks=("delta",))

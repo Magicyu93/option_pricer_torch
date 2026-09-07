@@ -14,13 +14,24 @@ import math
 
 import pytest
 
-from torch_pricer.black_formula import black_delta, black_gamma, black_price, black_vega
+from torch_pricer.black_formula import black_price
+from torch_pricer.instruments.spec import Right, Style, VanillaOption
 from torch_pricer.models.black import BlackScholesModel
 from torch_pricer.pricer.engine import MCConfig, price
 
-from .conftest import DIV, RATE, SPOT, VOL, analytic_inputs
+from .conftest import (
+    DIV,
+    EXPIRY,
+    RATE,
+    SPOT,
+    VOL,
+    analytic_greeks,
+    analytic_inputs,
+)
 
 CONFIG = MCConfig(n_paths=200_000, n_steps=20, seed=7)
+#: Gamma is differenced, so it wants more paths than the price does.
+GREEK_CONFIG = MCConfig(n_paths=400_000, n_steps=20, seed=7)
 
 
 def _model():
@@ -73,9 +84,7 @@ def test_step_count_invariance(market, call, n_steps):
 
 def test_deep_itm_call_is_the_forward(market, call):
     """A call struck at ~0 is the forward, discounted."""
-    from torch_pricer.instruments.spec import Right, VanillaOption
-
-    deep = VanillaOption(strike=1e-4, maturity=call.maturity, right=Right.CALL)
+    deep = VanillaOption(strike=1e-4, maturity=call.maturity, right=Right.CALL, style=Style.EUROPEAN)
     t, fwd, disc = analytic_inputs(market, deep)
     res = price(deep, market, _model(), CONFIG)
     assert abs(res.price - disc * (fwd - deep.strike)) < 4 * res.stderr
@@ -90,56 +99,58 @@ def test_reproducible_from_seed(market, call):
 # -- greeks --------------------------------------------------------------
 
 
-def test_pathwise_greeks_match_black(market, call):
-    """delta, vega, theta and rho all come off one backward pass."""
-    t, fwd, disc = analytic_inputs(market, call)
-    res = price(call, market, _model(), CONFIG, greeks=("delta", "vega", "theta", "rho"))
-
-    d1 = (math.log(fwd / call.strike) + 0.5 * VOL**2 * t) / (VOL * math.sqrt(t))
-    d2 = d1 - VOL * math.sqrt(t)
-
-    # black_delta is with respect to the forward; dF/dS = D_q/D_r.
-    assert res.greeks["delta"] == pytest.approx(
-        float(black_delta(fwd, call.strike, t, VOL, disc)) * math.exp((RATE - DIV) * t),
-        rel=5e-3,
-    )
-    assert res.greeks["vega"] == pytest.approx(
-        float(black_vega(fwd, call.strike, t, VOL, disc)), rel=1.5e-2
-    )
-    theta = (
-        -SPOT * math.exp(-DIV * t) * _norm_pdf(d1) * VOL / (2 * math.sqrt(t))
-        + DIV * SPOT * math.exp(-DIV * t) * _norm_cdf(d1)
-        - RATE * call.strike * math.exp(-RATE * t) * _norm_cdf(d2)
-    )
-    assert res.greeks["theta"] == pytest.approx(theta, rel=1e-2)
-    assert float(res.greeks["rho"]) == pytest.approx(
-        call.strike * t * math.exp(-RATE * t) * _norm_cdf(d2), rel=5e-3
-    )
+#: Tolerances from each estimator's measured single-seed spread at this sample
+#: size: the pathwise greeks are tight, vega runs ~0.4% and gamma -- differenced
+#: rather than differentiated -- ~1.5%.
+_TOL = {"delta": 5e-3, "vega": 1.5e-2, "theta": 1e-2, "rho": 5e-3, "gamma": 5e-2}
 
 
-def test_gamma_by_bumping_matches_black(market, call):
-    """Gamma is differenced, not differentiated: the second derivative of a kink
-    is a Dirac, so a second backward pass returns exactly zero."""
-    t, fwd, disc = analytic_inputs(market, call)
-    res = price(
-        call, market, _model(), MCConfig(n_paths=400_000, n_steps=20, seed=7),
-        greeks=("gamma",),
+@pytest.mark.parametrize("right", [Right.CALL, Right.PUT])
+@pytest.mark.parametrize("strike", [80.0, 100.0, 120.0])
+def test_all_greeks_match_black(market, right, strike):
+    """delta, vega, theta and rho from one backward pass; gamma differenced.
+
+    Both rights, because the signs differ where it matters: put theta picks up
+    ``+ r K D N(-d2)`` rather than losing it, and put rho is negative. A call-only
+    test passes happily with the ``w`` factor dropped.
+    """
+    spec = VanillaOption(
+        strike=strike, maturity=EXPIRY, right=right, style=Style.EUROPEAN
     )
-    spot_gamma = float(black_gamma(fwd, call.strike, t, VOL, disc)) * math.exp(
-        2 * (RATE - DIV) * t
-    )
-    assert res.greeks["gamma"] == pytest.approx(spot_gamma, rel=5e-2)
+    t = market.time_to(EXPIRY)
+    ref = analytic_greeks(strike, t, right)
+    res = price(spec, market, _model(), GREEK_CONFIG, greeks=tuple(_TOL))
+
+    assert abs(res.price - ref["price"]) < 3 * res.stderr
+    for name, tol in _TOL.items():
+        assert float(res.greeks[name]) == pytest.approx(ref[name], rel=tol), name
 
 
-def test_put_greeks_match_black(market, put):
-    t, fwd, disc = analytic_inputs(market, put)
-    res = price(put, market, _model(), CONFIG, greeks=("delta", "vega"))
-    assert res.greeks["delta"] == pytest.approx(
-        float(black_delta(fwd, put.strike, t, VOL, disc, right=-1))
-        * math.exp((RATE - DIV) * t),
-        rel=5e-3,
-    )
-    # Vega is identical for calls and puts.
-    assert res.greeks["vega"] == pytest.approx(
-        float(black_vega(fwd, put.strike, t, VOL, disc)), rel=1.5e-2
+def test_gamma_is_identical_for_call_and_put(market):
+    """Put-call parity is linear in spot, so its second derivative vanishes."""
+    kw = dict(strike=100.0, maturity=EXPIRY, style=Style.EUROPEAN)
+    c = price(VanillaOption(right=Right.CALL, **kw), market, _model(),
+              GREEK_CONFIG, greeks=("gamma",))
+    p = price(VanillaOption(right=Right.PUT, **kw), market, _model(),
+              GREEK_CONFIG, greeks=("gamma",))
+    assert c.greeks["gamma"] == pytest.approx(p.greeks["gamma"], rel=1e-9)
+
+
+def test_put_call_delta_parity(market):
+    """``delta_call - delta_put = D_q``, to Monte Carlo accuracy on the forward.
+
+    Pathwise, the difference is ``D * mean(S_T / S_0)`` over the shared paths --
+    exact against the *simulated* forward, but the simulated forward is not the
+    analytic one. Antithetic sampling makes the driver sum to zero, not
+    ``E[exp(sigma sqrt(T) z)]`` exact; see
+    :class:`~torch_pricer.simulator.rng.NormalDraws`.
+    """
+    kw = dict(strike=100.0, maturity=EXPIRY, style=Style.EUROPEAN)
+    c = price(VanillaOption(right=Right.CALL, **kw), market, _model(),
+              GREEK_CONFIG, greeks=("delta",))
+    p = price(VanillaOption(right=Right.PUT, **kw), market, _model(),
+              GREEK_CONFIG, greeks=("delta",))
+    t = market.time_to(EXPIRY)
+    assert c.greeks["delta"] - p.greeks["delta"] == pytest.approx(
+        math.exp(-DIV * t), rel=1e-3
     )
