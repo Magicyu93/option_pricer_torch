@@ -16,7 +16,8 @@ extra forward pass, and it has none of the bump-size sensitivity of finite
 differences.
 
 Second-order risk is the exception, and it is worth understanding why rather
-than discovering it in production. For a vanilla call the simulated terminal
+than discovering it in production. Ask for ``gamma_autograd`` alongside
+``gamma`` to see the difference on any model. For a vanilla call the simulated terminal
 spot is ``S_T = S_0 M`` with ``M`` independent of ``S_0``, so the payoff
 ``max(S_0 M - K, 0)`` is piecewise *linear* in ``S_0``. Its second derivative is
 a Dirac at the strike -- zero almost everywhere -- and a second backward pass
@@ -61,7 +62,8 @@ from torch_pricer.simulator.simulator import EulerMaruyamaSimulator
 #: vega means chaining through the calibration with
 #: :meth:`~torch_pricer.calibration.result.CalibrationResult.market_sensitivity`.
 SUPPORTED_GREEKS = (
-    "delta", "vega", "theta", "rho", "dividend_rho", "gamma", "model_params",
+    "delta", "vega", "theta", "rho", "dividend_rho", "gamma", "gamma_autograd",
+    "model_params",
 )
 
 #: Those taken by a single backward pass, and the leaf each differentiates against.
@@ -228,6 +230,9 @@ def price(
             g = -g if name == "theta" else g
             risk[name] = float(g) if g.numel() == 1 else g.detach()
 
+    if "gamma_autograd" in greeks:
+        risk["gamma_autograd"] = _gamma_autograd(expected, spot)
+
     if "model_params" in greeks:
         named = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
         if not named:
@@ -272,6 +277,36 @@ def _leaf_for(
             )
         return vol
     raise PricingError(f"no leaf registered for greek {name!r}")
+
+
+def _gamma_autograd(expected: Tensor, spot: Tensor) -> float:
+    """Second derivative of the price in spot, straight from a second backward pass.
+
+    Exposed as a diagnostic, not as a number to risk-manage on. What it returns
+    depends on the model, and the difference is worth seeing:
+
+    * **Constant or state-independent coefficients** (Black-Scholes, Heston):
+      ``S_T = S_0 M`` with ``M`` independent of ``S_0``, so the payoff is
+      piecewise *linear* in spot. Its second derivative is a Dirac at the strike,
+      which autograd evaluates as zero almost everywhere. Expect zero to
+      floating-point roundoff -- around ``1e-18``, or ``1e-16`` of the true
+      gamma. Not small, not noisy: structurally absent.
+    * **State-dependent diffusion** (local vol): ``sigma_LV(S_t, t)`` makes the
+      path a nonlinear function of ``S_0``, so a genuine second-order term
+      survives and the result is *not* zero. It is still incomplete -- the
+      density term at the strike is dropped just the same -- so it is a lower
+      bound on gamma of unknown tightness, not gamma.
+
+    Either way :func:`_gamma` is the number to use. This one is here so the
+    failure is visible rather than folklore.
+    """
+    (delta,) = torch.autograd.grad(expected, [spot], create_graph=True, retain_graph=True)
+    (curvature,) = torch.autograd.grad(
+        delta, [spot], retain_graph=True, allow_unused=True
+    )
+    # ``None`` means the graph carries no second-order dependence at all, which
+    # is the piecewise-linear case above; report it as the zero it is.
+    return 0.0 if curvature is None else float(curvature.detach())
 
 
 def _stderr(pv: Tensor, antithetic: bool) -> float:

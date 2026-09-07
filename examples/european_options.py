@@ -26,7 +26,7 @@ from torch_pricer.pricer.engine import MCConfig, price
 
 AS_OF, EXPIRY = dt.date(2025, 1, 2), dt.date(2026, 1, 2)
 SPOT, RATE, DIV, VOL = 100.0, 0.03, 0.01, 0.20
-GREEKS = ("delta", "gamma", "vega", "theta", "rho")
+GREEKS = ("delta", "gamma", "gamma_autograd", "vega", "theta", "rho")
 
 
 def _norm_cdf(x: float) -> float:
@@ -55,6 +55,11 @@ def analytic(strike: float, t: float, right: Right) -> dict[str, float]:
         "price": float(black_price(fwd, strike, t, VOL, disc, w)),
         "delta": float(black_delta(fwd, strike, t, VOL, disc, w)) * dfwd_dspot,
         "gamma": float(black_gamma(fwd, strike, t, VOL, disc)) * dfwd_dspot**2,
+        # Not a typo. Under Black-Scholes the payoff is piecewise linear in
+        # spot, so its second derivative is a Dirac and a second backward pass
+        # recovers nothing. The value to compare against *is* 0; what prints is
+        # floating-point residue, around 1e-16 of the real gamma.
+        "gamma_autograd": 0.0,
         "vega": float(black_vega(fwd, strike, t, VOL, disc)),
         # Theta is d/dt in calendar time, so the sign is opposite to d/dT.
         "theta": (
@@ -92,19 +97,26 @@ def main() -> None:
             ref = analytic(strike, t, right)
 
             print(f"\n=== {spec.describe()} ===")
-            print(f"  {'':>6} {'Monte Carlo':>14} {'Black':>14} {'diff':>12} {'rel':>9}")
+            print(f"  {'':>14} {'Monte Carlo':>14} {'Black':>14} {'diff':>12} {'rel':>9}")
             rows = [("price", res.price)] + [(g, float(res.greeks[g])) for g in GREEKS]
             for name, mc in rows:
                 exact = ref[name]
                 rel = f"{mc / exact - 1:>+8.2%}" if abs(exact) > 1e-12 else f"{'--':>9}"
-                print(f"  {name:>6} {mc:>14.6f} {exact:>14.6f} {mc - exact:>+12.6f} {rel}")
-            print(f"  {'':>6} {'+/- ' + format(res.stderr, '.6f'):>14}   (price standard error)")
+                print(f"  {name:>14} {mc:>14.6f} {exact:>14.6f} {mc - exact:>+12.6f} {rel}")
+            print(f"  {'':>14} {'+/- ' + format(res.stderr, '.6f'):>14}"
+                  f"   (price standard error)")
 
     print("\nNotes")
     print("  delta/vega/theta/rho are pathwise: unbiased, one backward pass, and")
     print("    tight enough here that the difference is dominated by price noise.")
     print("  gamma is differenced from the pathwise delta and carries roughly 1.5%")
     print("    single-seed spread at this sample size -- see MCConfig.gamma_bump.")
+    print("  gamma_autograd is a second backward pass, shown so the failure is")
+    print("    visible rather than folklore. It is zero to roundoff here, and under")
+    print("    Heston too, because the payoff is piecewise linear in spot. Only a")
+    print("    state-dependent diffusion leaves a second-order term to find: under")
+    print("    local vol it returns ~0.0086 against a true gamma near 0.0236, so")
+    print("    even there it is a fraction of the answer, not the answer.")
     print("  rho is per unit of the funding curve's single flat pillar. On a")
     print("    pillared curve it comes back as one sensitivity per pillar.")
 

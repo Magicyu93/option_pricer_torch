@@ -111,6 +111,29 @@ def test_checkpointing_is_numerically_transparent():
     assert plain.greeks["delta"] == ckpt.greeks["delta"]
 
 
+def test_gamma_autograd_is_nonzero_but_incomplete_under_local_vol():
+    """The one model where a second backward pass returns something.
+
+    ``sigma_LV(S_t, t)`` makes the path a nonlinear function of ``S_0``, so a
+    genuine second-order term survives where Black-Scholes and Heston have none.
+    It is still missing the density term at the strike, so it recovers only part
+    of gamma -- roughly a third at this configuration -- and must not be used as
+    gamma. Asserting that it is neither zero nor right is the point.
+    """
+    market = _market()
+    spec = VanillaOption(
+        strike=100.0, maturity=dt.date(2026, 1, 2), right=Right.CALL, style=Style.EUROPEAN
+    )
+    res = price(
+        spec, market, LocalVolModel(_surface(market)),
+        MCConfig(n_paths=100_000, n_steps=100, seed=7, checkpoint_segments=10),
+        greeks=("gamma", "gamma_autograd"),
+    )
+    assert res.greeks["gamma"] > 0.01
+    assert res.greeks["gamma_autograd"] > 0.0
+    assert res.greeks["gamma_autograd"] < 0.75 * res.greeks["gamma"]
+
+
 def test_local_vol_needs_an_svi_surface():
     market = _market()
     with pytest.raises(ValidationError, match="needs an SVISurface"):

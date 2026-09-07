@@ -136,6 +136,26 @@ def test_gamma_is_identical_for_call_and_put(market):
     assert c.greeks["gamma"] == pytest.approx(p.greeks["gamma"], rel=1e-9)
 
 
+@pytest.mark.parametrize("right", [Right.CALL, Right.PUT])
+def test_gamma_autograd_is_exactly_zero_under_black_scholes(market, right):
+    """Zero to floating-point roundoff, not merely small.
+
+    ``S_T = S_0 M`` with ``M`` independent of ``S_0``, so ``max(S_0 M - K, 0)``
+    is piecewise linear in spot and its second derivative is a Dirac that
+    autograd evaluates as zero everywhere. What comes back is the residue of
+    summing a great many exact zeros in floating point -- around 1e-18, i.e.
+    1e-16 of the true gamma -- so the bound below is on that scale, not on any
+    Monte Carlo error. This is why ``gamma`` is differenced instead, and why
+    volga and vanna are not offered at all.
+    """
+    spec = VanillaOption(
+        strike=100.0, maturity=EXPIRY, right=right, style=Style.EUROPEAN
+    )
+    res = price(spec, market, _model(), CONFIG, greeks=("gamma", "gamma_autograd"))
+    assert abs(res.greeks["gamma_autograd"]) < 1e-12 * res.greeks["gamma"]
+    assert res.greeks["gamma"] > 0.01  # the differenced one is fine
+
+
 def test_put_call_delta_parity(market):
     """``delta_call - delta_put = D_q``, to Monte Carlo accuracy on the forward.
 
