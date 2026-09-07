@@ -4,6 +4,7 @@ import datetime as dt
 import math
 
 import pytest
+
 import torch
 
 from torch_pricer.errors import ValidationError
@@ -12,6 +13,8 @@ from torch_pricer.market.snapshot import MarketSnapshot
 from torch_pricer.models.heston import HestonModel
 from torch_pricer.pricer.analytic.heston import feller, heston_price
 from torch_pricer.pricer.monte_carlo.engine import MCConfig, price
+
+from .conftest import averaged
 
 AS_OF, EXPIRY = dt.date(2025, 1, 2), dt.date(2026, 1, 2)
 SPOT, RATE, DIV = 100.0, 0.03, 0.01
@@ -56,8 +59,12 @@ def test_analytic_put_call_parity(strike):
 @pytest.mark.parametrize("strike", [80.0, 100.0, 125.0])
 def test_simulation_matches_the_characteristic_function(strike):
     spec = VanillaOption(strike=strike, maturity=EXPIRY, right=Right.CALL, style=Style.EUROPEAN)
+    # Steps stay at 200: unlike GBM, the truncated variance scheme is not exact,
+    # so the step count carries a bias the standard error does not cover. Paths
+    # are what came down -- the assertion is scaled by stderr, so it holds at any
+    # sample size.
     res = price(spec, _market(), HestonModel(**PARAMS),
-                MCConfig(n_paths=200_000, n_steps=200, seed=5))
+                MCConfig(n_paths=50_000, n_steps=200, seed=5))
     ref = heston_price(SPOT, strike, 1.0, RATE, DIV, right=1, **PARAMS)
     assert abs(res.price - ref) < 3 * res.stderr
 
@@ -103,15 +110,21 @@ def test_pathwise_v0_greek_is_accurate_when_feller_holds():
     safe = dict(v0=0.04, kappa=4.0, theta=0.04, xi=0.3, rho=-0.7)
     assert feller(safe["kappa"], safe["theta"], safe["xi"]) > 0
     spec = VanillaOption(strike=100.0, maturity=EXPIRY, right=Right.CALL, style=Style.EUROPEAN)
-    res = price(spec, _market(), HestonModel(**safe),
-                MCConfig(n_paths=200_000, n_steps=200, seed=5), greeks=("model_params",))
+    _, _, greeks = averaged(
+        lambda seed: price(
+            spec, _market(), HestonModel(**safe),
+            MCConfig(n_paths=50_000, n_steps=200, seed=seed),
+            greeks=("model_params",),
+        ),
+        range(4),
+    )
     h = 1e-5
     up, dn = dict(safe), dict(safe)
     up["v0"] += h
     dn["v0"] -= h
     ref = (heston_price(SPOT, 100.0, 1.0, RATE, DIV, right=1, **up)
            - heston_price(SPOT, 100.0, 1.0, RATE, DIV, right=1, **dn)) / (2 * h)
-    assert float(res.greeks["model_params"]["v0"]) == pytest.approx(ref, rel=0.02)
+    assert greeks["model_params"]["v0"] == pytest.approx(ref, rel=0.02)
 
 
 def test_feller_margin_is_reported():

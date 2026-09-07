@@ -4,6 +4,7 @@ import datetime as dt
 import math
 
 import pytest
+
 import torch
 
 from torch_pricer.pricer.analytic.black import implied_vol
@@ -13,6 +14,8 @@ from torch_pricer.market.snapshot import MarketSnapshot
 from torch_pricer.market.svi import SVISlice, SVISurface
 from torch_pricer.models.local_vol import LocalVolModel
 from torch_pricer.pricer.monte_carlo.engine import MCConfig, price
+
+from .conftest import averaged
 
 AS_OF = dt.date(2025, 1, 2)
 SPOT, RATE, DIV = 100.0, 0.03, 0.01
@@ -67,13 +70,19 @@ def test_dupire_reproduces_the_generating_surface(strike):
     expiry = dt.date(2026, 1, 2)
     spec = VanillaOption(strike=strike, maturity=expiry, right=Right.CALL, style=Style.EUROPEAN)
 
-    res = price(
-        spec, market, LocalVolModel(surface),
-        MCConfig(n_paths=200_000, n_steps=250, seed=11, checkpoint_segments=16),
+    # 250 steps is load-bearing -- the bias table above is quoted against it, and
+    # the 35bp tolerance is set for it -- so only the path count comes down, and
+    # the lost accuracy is bought back by averaging independent seeds instead.
+    res_price, _, _ = averaged(
+        lambda seed: price(
+            spec, market, LocalVolModel(surface),
+            MCConfig(n_paths=50_000, n_steps=250, seed=seed, checkpoint_segments=16),
+        ),
+        range(4),
     )
     t = market.time_to(expiry)
     fwd, disc = SPOT * math.exp((RATE - DIV) * t), math.exp(-RATE * t)
-    mc_vol = float(implied_vol(res.price, fwd, strike, t, disc, 1))
+    mc_vol = float(implied_vol(res_price, fwd, strike, t, disc, 1))
     target = float(surface.vol(torch.tensor(strike, dtype=torch.float64), t).detach())
 
     assert abs(mc_vol - target) < 0.0035
@@ -126,7 +135,13 @@ def test_gamma_autograd_is_nonzero_but_incomplete_under_local_vol():
     )
     res = price(
         spec, market, LocalVolModel(_surface(market)),
-        MCConfig(n_paths=100_000, n_steps=100, seed=7, checkpoint_segments=10),
+        # gamma_autograd runs a second backward pass with create_graph, which
+        # retains the double-backward graph on top of the forward one. Checkpoint
+        # segments do not help: the recomputation graph is retained too. At the
+        # 100k x 100 this used to run, peak demand exceeded 11.6 GB and the test
+        # could not pass on the card at all -- the contrast it asserts is just as
+        # visible an order of magnitude smaller.
+        MCConfig(n_paths=20_000, n_steps=50, seed=7),
         greeks=("gamma", "gamma_autograd"),
     )
     assert res.greeks["gamma"] > 0.01

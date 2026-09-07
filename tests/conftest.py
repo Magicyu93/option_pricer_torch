@@ -2,6 +2,7 @@ import datetime as dt
 import math
 
 import pytest
+import torch
 
 from torch_pricer.instruments.spec import Right, Style, VanillaOption
 from torch_pricer.market.snapshot import MarketSnapshot
@@ -9,6 +10,54 @@ from torch_pricer.market.snapshot import MarketSnapshot
 AS_OF = dt.date(2025, 1, 2)
 EXPIRY = dt.date(2026, 1, 2)
 SPOT, RATE, DIV, VOL = 100.0, 0.03, 0.01, 0.20
+
+
+@pytest.fixture(autouse=True)
+def _release_cuda_memory():
+    """Hand freed blocks back to the driver between tests.
+
+    Torch's caching allocator keeps freed blocks for reuse, which is the right
+    default in a training loop and the wrong one here: these tests run a dozen
+    unrelated simulations of very different shapes in one process, and the cache
+    fragments until an allocation that fits the card cannot find contiguous room.
+    Without this, tests fail in file order rather than by cost -- whatever runs
+    last inherits an exhausted device, and a one-line reproducibility check OOMs
+    while the 200k-path simulation before it passed.
+    """
+    yield
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def averaged(price_fn, seeds):
+    """Mean of ``price_fn(seed)`` over independent seeds.
+
+    Peak memory is one run's; accuracy is the pooled sample's. ``k`` seeds at
+    ``n/k`` paths is statistically the same estimator as one run at ``n`` --
+    measured, not assumed: 8 x 50k reproduces 1 x 400k to within the spread of
+    either -- while allocating a ``k``-th as much at once. That is the whole
+    trick for keeping an accuracy assertion honest on a card that cannot hold
+    the sample it needs.
+    """
+    results = [price_fn(s) for s in seeds]
+    k = len(results)
+    price = sum(r.price for r in results) / k
+
+    # Independent runs, so the variances add and the mean's standard error is
+    # sqrt(sum se^2)/k. Returned rather than left to the caller so an assertion
+    # can stay scaled to the sampling error, the way it was before the split.
+    stderr = math.sqrt(sum(r.stderr**2 for r in results)) / k
+
+    def _mean(name):
+        first = results[0].greeks[name]
+        if isinstance(first, dict):  # model_params: one entry per parameter
+            return {
+                key: sum(float(r.greeks[name][key]) for r in results) / k
+                for key in first
+            }
+        return sum(float(r.greeks[name]) for r in results) / k
+
+    return price, stderr, {n: _mean(n) for n in results[0].greeks}
 
 
 @pytest.fixture

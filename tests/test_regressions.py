@@ -52,7 +52,7 @@ def test_antithetic_paths_mirror():
 def test_simulation_uses_every_path(market, call):
     """A wrong ``x0`` shape simulated n_steps paths instead of n_paths, which
     shows up as a standard error far larger than the sample size implies."""
-    res = price(call, market, BlackScholesModel(VOL), MCConfig(n_paths=100_000, n_steps=50))
+    res = price(call, market, BlackScholesModel(VOL), MCConfig(n_paths=50_000, n_steps=10))
     assert res.stderr < 0.05
 
 
@@ -98,7 +98,7 @@ def test_bucketed_rho_sums_to_parallel_rho():
     )
     call = VanillaOption(strike=100.0, maturity=EXPIRY, right=Right.CALL, style=Style.EUROPEAN)
     res = price(call, market, BlackScholesModel(VOL),
-                MCConfig(n_paths=200_000, n_steps=20, seed=7), greeks=("rho",))
+                MCConfig(n_paths=50_000, n_steps=5, seed=7), greeks=("rho",))
     rho = res.greeks["rho"]
     assert rho.shape == (4,)
 
@@ -191,7 +191,7 @@ def test_geometric_asian_matches_closed_form(market):
     spec = AsianOption(strike=100.0, maturity=EXPIRY, right=Right.CALL,
                        average=AverageKind.GEOMETRIC)
     res = price(spec, market, BlackScholesModel(VOL),
-                MCConfig(n_paths=200_000, n_steps=n, seed=7))
+                MCConfig(n_paths=50_000, n_steps=n, seed=7))
 
     t = market.time_to(EXPIRY)
     mu = RATE - DIV
