@@ -173,19 +173,27 @@ def value(
     indices: list[int],
     lsm: LSMConfig,
     coefficients: dict[int, Tensor],
+    offset: int = 0,
 ) -> Tensor:
     """Discounted cashflow per path under a fixed exercise policy.
+
+    ``offset`` is the global time index of column zero of ``asset_path``, so a
+    sub-path starting partway through the grid can be valued under the same
+    policy and the same global discount factors. ``indices`` and ``discounts``
+    stay in global terms throughout; only the column lookup shifts.
 
     Differentiable in the path and in the discount curve; the decision itself is
     a detached mask, so delta comes off this by autograd exactly as it does for a
     European payoff.
     """
-    cash = discounts[indices[-1]] * intrinsic(asset_path[:, indices[-1]], None)
+    cash = discounts[indices[-1]] * intrinsic(
+        asset_path[:, indices[-1] - offset], None
+    )
     for k in reversed(indices[:-1]):
         beta = coefficients.get(k)
         if beta is None:
             continue
-        spot_k = asset_path[:, k]
+        spot_k = asset_path[:, k - offset]
         exercise = discounts[k] * intrinsic(spot_k, None)
         itm = exercise > 0
         if not bool(itm.any()):

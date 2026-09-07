@@ -51,6 +51,11 @@ from torch_pricer.errors import PricingError, ValidationError
 from torch_pricer.instruments.payoff import Payoff, intrinsic_for, payoff_for
 from torch_pricer.instruments.spec import Instrument, Style, VanillaOption
 from torch_pricer.pricer.monte_carlo import lsm as lsm_mod
+from torch_pricer.pricer.monte_carlo.dual import (
+    Bracket,
+    DualConfig,
+    upper_bound as dual_upper_bound,
+)
 from torch_pricer.pricer.monte_carlo.lsm import LSMConfig
 from torch_pricer.market.snapshot import MarketSnapshot
 from torch_pricer.models.base import Model
@@ -339,6 +344,109 @@ def price(
         stderr=_stderr(pv.detach(), config.antithetic),
         greeks=risk,
     )
+
+
+def price_bracket(
+    spec: Instrument,
+    market: MarketSnapshot,
+    model: Model,
+    config: MCConfig | None = None,
+    lsm: LSMConfig | None = None,
+    dual: DualConfig | None = None,
+):
+    """Two-sided price for an American contract: ``[lower, upper]``.
+
+    The lower bound is the usual Longstaff-Schwartz value under a fitted policy.
+    The upper bound is its Andersen-Broadie dual. The true price lies between
+    them, and the width of the bracket measures how much the finite basis is
+    giving away -- the one diagnostic that survives into models where no lattice
+    or PDE reference exists.
+
+    Args:
+        spec: an American vanilla
+        market: spot, curves, surface, dividends
+        model: calibrated dynamics
+        config: Monte Carlo settings; the outer path count for the dual comes
+            from ``dual`` instead
+        lsm: exercise-policy settings
+        dual: nesting sizes for the upper bound
+
+    Returns:
+        A :class:`~torch_pricer.pricer.monte_carlo.dual.Bracket`.
+
+    Raises:
+        ValidationError: if ``spec`` is not an American vanilla.
+    """
+    if not (isinstance(spec, VanillaOption) and spec.style is Style.AMERICAN):
+        raise ValidationError(
+            "a dual bracket is defined for an American vanilla; a European "
+            "contract has no exercise policy to be suboptimal about"
+        )
+    config = config or MCConfig()
+    lsm_config = lsm or LSMConfig()
+    dual_config = dual or DualConfig()
+
+    device = resolve_device(config.device)
+    market = market.to(device=device, dtype=config.dtype)
+    model = model.to(device=device, dtype=config.dtype)
+    intrinsic = intrinsic_for(spec)
+    maturity = torch.tensor(
+        market.time_to(spec.expiry), dtype=config.dtype, device=device
+    )
+
+    required: tuple[int, ...] = ()
+    if lsm_config.align_to_dividends and market.dividends:
+        required = lsm_mod.pre_dividend_indices(
+            market.dividends.times(market.as_of, market.day_count),
+            config.n_steps, float(maturity),
+        )
+    indices = lsm_mod.exercise_indices(
+        config.n_steps, lsm_config.n_exercise_dates, required
+    )
+    coefficients = _fit_lsm_policy(
+        market, model, maturity, intrinsic, spec.strike, indices,
+        lsm_config, config, device,
+    )
+
+    def run(n_paths, seed):
+        draws = NormalDraws(
+            n_paths=n_paths, n_factors=model.n_factors, seed=seed,
+            antithetic=config.antithetic, device=device, dtype=config.dtype,
+        ).draw(config.n_steps)
+        states, _, sde, t_grid = _simulate(
+            market, model, maturity, market.spot, intrinsic, draws,
+            dataclasses.replace(config, n_paths=n_paths), device, keep_path=True,
+        )
+        return states, sde, t_grid
+
+    with torch.no_grad():
+        # The lower bound is cheap, so it gets the full path budget rather than
+        # the dual's outer count. Sharing them would report a bound whose own
+        # sampling error swamps the gap it is there to measure.
+        states, sde, t_grid = run(config.n_paths, config.seed)
+        discounts = market.discount.discount(t_grid)
+        cash = lsm_mod.value(
+            asset_path(sde, states, t_grid, market, maturity), discounts,
+            intrinsic, spec.strike, indices, lsm_config, coefficients,
+        )
+        low = float(cash.mean())
+        low_se = _stderr(cash, config.antithetic)
+        del states, cash
+
+        states, sde, t_grid = run(dual_config.n_outer, config.seed + 1)
+        levels = asset_path(sde, states, t_grid, market, maturity)
+
+        add_back = None
+        if market.dividends:
+            add_back = _dividend_pv(market, t_grid, maturity)
+
+        high, high_se = dual_upper_bound(
+            sde, levels, states, t_grid, indices, discounts, intrinsic,
+            spec.strike, lsm_config, coefficients, dual_config,
+            model.n_factors, add_back,
+        )
+
+    return Bracket(low=low, high=high, low_stderr=low_se, high_stderr=high_se)
 
 
 def _leaf_for(
