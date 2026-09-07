@@ -89,7 +89,7 @@ def fit_surface(surface: SVISurface, inputs: CalibrationInputs) -> CalibrationRe
         if q.implied_vol is None:
             raise CalibrationError(
                 f"quote {q.expiry} {q.strike:g} has no implied_vol; invert its premium "
-                "with black_formula.implied_vol before calibrating"
+                "with analytic.black.implied_vol before calibrating"
             )
         by_expiry[q.expiry].append(q)
 

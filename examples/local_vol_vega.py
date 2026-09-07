@@ -20,7 +20,7 @@ from torch_pricer.instruments.spec import Right, Style, VanillaOption
 from torch_pricer.market.snapshot import MarketSnapshot
 from torch_pricer.market.svi import SVISlice, SVISurface
 from torch_pricer.models.local_vol import LocalVolModel
-from torch_pricer.pricer.engine import MCConfig, price
+from torch_pricer.pricer.monte_carlo.engine import MCConfig, price
 
 AS_OF, EXPIRY, T = dt.date(2025, 1, 2), dt.date(2026, 1, 2), 1.0
 STRIKES = [80.0, 90.0, 95.0, 100.0, 105.0, 110.0, 125.0]

@@ -51,8 +51,8 @@ from torch_pricer.instruments.payoff import Payoff, payoff_for
 from torch_pricer.instruments.spec import Instrument
 from torch_pricer.market.snapshot import MarketSnapshot
 from torch_pricer.models.base import Model
-from torch_pricer.simulator.rng import NormalDraws
-from torch_pricer.simulator.simulator import EulerMaruyamaSimulator
+from torch_pricer.simulator.monte_carlo.rng import NormalDraws
+from torch_pricer.simulator.monte_carlo.simulator import EulerMaruyamaSimulator
 
 #: Greeks the engine knows how to take.
 #:

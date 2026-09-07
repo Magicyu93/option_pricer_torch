@@ -50,7 +50,7 @@ def analytic_greeks(strike: float, t: float, right: Right) -> dict[str, float]:
     ``d/dt`` in calendar time, hence opposite in sign to the ``d/dT`` the engine
     differentiates.
     """
-    from torch_pricer.black_formula import black_delta, black_gamma, black_price, black_vega
+    from torch_pricer.pricer.analytic.black import black_delta, black_gamma, black_price, black_vega
 
     w = float(right.sign)
     fwd, disc = SPOT * math.exp((RATE - DIV) * t), math.exp(-RATE * t)

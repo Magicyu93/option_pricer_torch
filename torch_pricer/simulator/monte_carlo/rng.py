@@ -41,7 +41,7 @@ class NormalDraws:
     Because the second half of the batch mirrors the first, paths ``i`` and
     ``i + n_paths/2`` are one draw rather than two. Standard errors must be
     computed over pair means; see
-    :func:`~torch_pricer.pricer.engine._stderr`.
+    :func:`~torch_pricer.pricer.monte_carlo.engine._stderr`.
     """
 
     def __init__(

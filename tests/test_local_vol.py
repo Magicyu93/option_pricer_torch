@@ -6,13 +6,13 @@ import math
 import pytest
 import torch
 
-from torch_pricer.black_formula import implied_vol
+from torch_pricer.pricer.analytic.black import implied_vol
 from torch_pricer.errors import ValidationError
 from torch_pricer.instruments.spec import Right, Style, VanillaOption
 from torch_pricer.market.snapshot import MarketSnapshot
 from torch_pricer.market.svi import SVISlice, SVISurface
 from torch_pricer.models.local_vol import LocalVolModel
-from torch_pricer.pricer.engine import MCConfig, price
+from torch_pricer.pricer.monte_carlo.engine import MCConfig, price
 
 AS_OF = dt.date(2025, 1, 2)
 SPOT, RATE, DIV = 100.0, 0.03, 0.01

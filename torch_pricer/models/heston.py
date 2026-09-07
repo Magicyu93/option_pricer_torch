@@ -4,7 +4,7 @@
     dv      = kappa (theta - v) dt + xi sqrt(v) dW2,     d<W1, W2> = rho dt
 
 Two factors, correlated through the Cholesky factor of the diffusion matrix --
-which is why :class:`~torch_pricer.simulator.simulator.SDE` returns a matrix
+which is why :class:`~torch_pricer.simulator.monte_carlo.simulator.SDE` returns a matrix
 rather than an elementwise vector.
 
 **Read this before trusting a pathwise greek here.** The Euler scheme cannot
@@ -13,7 +13,7 @@ in both coefficients while letting the state itself go negative. Whenever a path
 takes ``v`` below zero that ``max`` is a kink *in the parameters*, so pathwise
 sensitivities have no theoretical guarantee there.
 
-Measured against :mod:`torch_pricer.models.heston_analytic`, 100k paths x 200
+Measured against :mod:`torch_pricer.pricer.analytic.heston`, 100k paths x 200
 steps, 40 seeds, 1y ATM call -- the effect is on **variance**, not bias:
 
     Feller satisfied (2*kappa*theta - xi^2 = +0.23)
@@ -31,7 +31,7 @@ long before bias becomes the problem. Market fits routinely violate Feller.
 If you need parameter greeks in that regime, the options are a QE (Andersen)
 scheme, a smoothed truncation, or bumping -- and whichever you pick, check it
 against the characteristic-function price rather than against intuition.
-:func:`~torch_pricer.models.heston_analytic.feller` reports the margin. Delta is
+:func:`~torch_pricer.pricer.analytic.heston.feller` reports the margin. Delta is
 unaffected; it does not pass through the truncation.
 """
 
@@ -45,7 +45,7 @@ from torch_pricer.calibration.inputs import CalibrationInputs
 from torch_pricer.errors import ValidationError
 from torch_pricer.market.snapshot import MarketSnapshot
 from torch_pricer.models.base import Model
-from torch_pricer.simulator.simulator import SDE
+from torch_pricer.simulator.monte_carlo.simulator import SDE
 from torch_pricer.tensors import EPS, as_tensor
 
 HESTON_PARAMS = ("v0", "kappa", "theta", "xi", "rho")
@@ -144,6 +144,6 @@ class HestonModel(Model):
 
     def calibrate(self, inputs: CalibrationInputs) -> None:
         raise NotImplementedError(
-            "HestonModel.calibrate: fit against heston_analytic.heston_price and "
+            "HestonModel.calibrate: fit against analytic.heston.heston_price and "
             "return a CalibrationResult carrying the Jacobian and Hessian"
         )

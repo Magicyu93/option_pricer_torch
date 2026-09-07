@@ -5,7 +5,7 @@ from typing import Callable
 import torch
 from torch import Tensor
 
-from torch_pricer.simulator.simulator import SDE
+from torch_pricer.simulator.monte_carlo.simulator import SDE
 
 
 class GeometricBrownianMotion(SDE):

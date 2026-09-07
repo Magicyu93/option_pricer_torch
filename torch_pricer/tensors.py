@@ -19,7 +19,7 @@ EPS = 1e-12
 #: seven significant digits.
 #:
 #: Constructing in float64 costs nothing on CPU and is the safe direction:
-#: :class:`~torch_pricer.pricer.engine.MCConfig` casts the whole snapshot and
+#: :class:`~torch_pricer.pricer.monte_carlo.engine.MCConfig` casts the whole snapshot and
 #: model to ``config.dtype`` before pricing, so a caller who wants float32 for
 #: speed still gets it -- from a value that was correct to begin with.
 DEFAULT_DTYPE = torch.float64

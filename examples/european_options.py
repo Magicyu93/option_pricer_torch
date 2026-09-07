@@ -13,7 +13,7 @@ Run with ``python -m examples.european_options``.
 import datetime as dt
 import math
 
-from torch_pricer.black_formula import (
+from torch_pricer.pricer.analytic.black import (
     black_delta,
     black_gamma,
     black_price,
@@ -22,7 +22,7 @@ from torch_pricer.black_formula import (
 from torch_pricer.instruments.spec import Right, Style, VanillaOption
 from torch_pricer.market.snapshot import MarketSnapshot
 from torch_pricer.models.black import BlackScholesModel
-from torch_pricer.pricer.engine import MCConfig, price
+from torch_pricer.pricer.monte_carlo.engine import MCConfig, price
 
 AS_OF, EXPIRY = dt.date(2025, 1, 2), dt.date(2026, 1, 2)
 SPOT, RATE, DIV, VOL = 100.0, 0.03, 0.01, 0.20

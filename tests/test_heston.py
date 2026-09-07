@@ -10,8 +10,8 @@ from torch_pricer.errors import ValidationError
 from torch_pricer.instruments.spec import Right, Style, VanillaOption
 from torch_pricer.market.snapshot import MarketSnapshot
 from torch_pricer.models.heston import HestonModel
-from torch_pricer.models.heston_analytic import feller, heston_price
-from torch_pricer.pricer.engine import MCConfig, price
+from torch_pricer.pricer.analytic.heston import feller, heston_price
+from torch_pricer.pricer.monte_carlo.engine import MCConfig, price
 
 AS_OF, EXPIRY = dt.date(2025, 1, 2), dt.date(2026, 1, 2)
 SPOT, RATE, DIV = 100.0, 0.03, 0.01

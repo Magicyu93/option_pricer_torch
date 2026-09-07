@@ -2,7 +2,7 @@
 
 A payoff never sees the simulator's state coordinate. The SDE may be integrating
 log-spot, or a two-component ``(spot, variance)`` vector; it hands back asset
-levels through :meth:`~torch_pricer.simulator.simulator.SDE.asset` and payoffs
+levels through :meth:`~torch_pricer.simulator.monte_carlo.simulator.SDE.asset` and payoffs
 work in that one currency. That is what lets a single payoff serve every model
 on the roadmap.
 

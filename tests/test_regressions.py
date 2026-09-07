@@ -24,8 +24,8 @@ from torch_pricer.instruments.spec import (
 from torch_pricer.market.curves import RateCurve
 from torch_pricer.market.snapshot import MarketSnapshot
 from torch_pricer.models.black import BlackScholesModel
-from torch_pricer.pricer.engine import MCConfig, price
-from torch_pricer.simulator.rng import NormalDraws
+from torch_pricer.pricer.monte_carlo.engine import MCConfig, price
+from torch_pricer.simulator.monte_carlo.rng import NormalDraws
 
 from .conftest import AS_OF, DIV, EXPIRY, RATE, SPOT, VOL
 
@@ -122,7 +122,7 @@ def test_stderr_is_computed_over_antithetic_pair_means():
     mean is identical and the true standard error is zero. Treating the six
     paths as independent reports a large error instead.
     """
-    from torch_pricer.pricer.engine import _stderr
+    from torch_pricer.pricer.monte_carlo.engine import _stderr
 
     pv = torch.tensor([1.0, 2.0, 3.0, 3.0, 2.0, 1.0])
     assert _stderr(pv, antithetic=True) == pytest.approx(0.0, abs=1e-12)
@@ -169,7 +169,7 @@ def test_snapshot_repr_works(market):
 
 
 def test_unimplemented_things_raise_rather_than_return():
-    from torch_pricer.simulator.brownian_bridge import BrownianBridge
+    from torch_pricer.simulator.monte_carlo.brownian_bridge import BrownianBridge
 
     with pytest.raises(NotImplementedError):
         BrownianBridge(0.0, 0.2).drift_coefficient(torch.zeros(2, 1), torch.tensor(0.0))
@@ -214,7 +214,7 @@ def test_auto_device_is_quiet_about_an_unusable_gpu():
     """
     import warnings as _warnings
 
-    import torch_pricer.pricer.engine as engine
+    import torch_pricer.pricer.monte_carlo.engine as engine
 
     engine._CUDA_PROBE = None  # force a real probe
     try:
@@ -235,7 +235,7 @@ def test_explicit_cuda_reports_why_it_is_unavailable():
     request.
     """
     import torch
-    import torch_pricer.pricer.engine as engine
+    import torch_pricer.pricer.monte_carlo.engine as engine
 
     if torch.cuda.is_available():
         pytest.skip("CUDA is usable here, so there is no failure to explain")

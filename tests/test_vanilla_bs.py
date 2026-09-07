@@ -14,10 +14,10 @@ import math
 
 import pytest
 
-from torch_pricer.black_formula import black_price
+from torch_pricer.pricer.analytic.black import black_price
 from torch_pricer.instruments.spec import Right, Style, VanillaOption
 from torch_pricer.models.black import BlackScholesModel
-from torch_pricer.pricer.engine import MCConfig, price
+from torch_pricer.pricer.monte_carlo.engine import MCConfig, price
 
 from .conftest import (
     DIV,
@@ -163,7 +163,7 @@ def test_put_call_delta_parity(market):
     exact against the *simulated* forward, but the simulated forward is not the
     analytic one. Antithetic sampling makes the driver sum to zero, not
     ``E[exp(sigma sqrt(T) z)]`` exact; see
-    :class:`~torch_pricer.simulator.rng.NormalDraws`.
+    :class:`~torch_pricer.simulator.monte_carlo.rng.NormalDraws`.
     """
     kw = dict(strike=100.0, maturity=EXPIRY, style=Style.EUROPEAN)
     c = price(VanillaOption(right=Right.CALL, **kw), market, _model(),

@@ -78,7 +78,7 @@ class Simulator(ABC):
             checkpoint_segments: if positive, retain only this many intermediate
                 states and recompute the rest during the backward pass. Trades
                 one extra forward pass for a large drop in peak memory; see
-                :class:`~torch_pricer.pricer.engine.MCConfig`.
+                :class:`~torch_pricer.pricer.monte_carlo.engine.MCConfig`.
 
         Returns:
             final state, shape ``(n_paths, dim)``
@@ -185,7 +185,7 @@ class EulerMaruyamaSimulator(Simulator):
 
     First order in general, but *exact* for an SDE with state-independent
     coefficients -- which is why
-    :class:`~torch_pricer.simulator.gbm.GeometricBrownianMotion` integrates
+    :class:`~torch_pricer.simulator.monte_carlo.gbm.GeometricBrownianMotion` integrates
     log-spot. There, the number of steps changes nothing but the Brownian path,
     so a Monte Carlo price can be compared against a closed form without a
     discretisation bias in the way.

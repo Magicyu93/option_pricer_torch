@@ -42,7 +42,7 @@ from torch_pricer.errors import ValidationError
 from torch_pricer.market.snapshot import MarketSnapshot
 from torch_pricer.market.svi import SVISurface
 from torch_pricer.models.base import Model
-from torch_pricer.simulator.simulator import SDE
+from torch_pricer.simulator.monte_carlo.simulator import SDE
 from torch_pricer.tensors import EPS, as_tensor
 
 
