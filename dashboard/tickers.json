@@ -1,0 +1,38 @@
+{
+  "_comment": [
+    "Candidate underlyings for the Massive (ex-Polygon) options snapshot endpoint.",
+    "",
+    "Two fields matter and they come from different places. 'exercise' is a fact",
+    "about the contract, from the exchange's specifications -- it does not depend",
+    "on any data plan, and it decides whether this project can price the thing at",
+    "all. 'available' is a fact about YOUR subscription and cannot be known from",
+    "here; run dashboard/diagnose.py to fill it in.",
+    "",
+    "Only 'european' contracts can be validated against Black, calibrated with",
+    "parity-implied forwards, or priced by the Monte Carlo engine as-is. American",
+    "ones need the LSM engine, a dividend forecast and a borrow estimate, because",
+    "put-call parity degrades to an inequality and the forward can no longer be",
+    "regressed out of the quotes."
+  ],
+  "endpoint_conventions": {
+    "snapshot": "https://api.polygon.io/v3/snapshot/options/{ticker}  -- indices take the 'I:' prefix",
+    "reference_contracts": "https://api.polygon.io/v3/reference/options/contracts?underlying_ticker={bare}  -- NO prefix",
+    "reference_indices": "https://api.polygon.io/v3/reference/tickers?market=indices  -- enumerates what exists",
+    "note": "The prefix rule differs by endpoint family and is a common source of empty results."
+  },
+  "candidates": [
+    {"snapshot": "I:SPX",  "bare": "SPX",  "name": "S&P 500 (AM-settled)",       "kind": "index", "exercise": "european", "settlement": "cash",     "priority": 1, "note": "The primary target. Deep, liquid, and the reference case for parity forwards."},
+    {"snapshot": "I:SPXW", "bare": "SPXW", "name": "S&P 500 weeklies (PM)",      "kind": "index", "exercise": "european", "settlement": "cash",     "priority": 2, "note": "Separate root from SPX; often where the liquidity actually is."},
+    {"snapshot": "I:XSP",  "bare": "XSP",  "name": "Mini-SPX (1/10 SPX)",        "kind": "index", "exercise": "european", "settlement": "cash",     "priority": 3, "note": "Same index, smaller notional. Thinner book."},
+    {"snapshot": "I:NDX",  "bare": "NDX",  "name": "Nasdaq-100",                 "kind": "index", "exercise": "european", "settlement": "cash",     "priority": 4},
+    {"snapshot": "I:RUT",  "bare": "RUT",  "name": "Russell 2000",               "kind": "index", "exercise": "european", "settlement": "cash",     "priority": 5},
+    {"snapshot": "I:DJX",  "bare": "DJX",  "name": "Dow Jones (1/100)",          "kind": "index", "exercise": "european", "settlement": "cash",     "priority": 6},
+    {"snapshot": "I:XEO",  "bare": "XEO",  "name": "S&P 100 (European)",         "kind": "index", "exercise": "european", "settlement": "cash",     "priority": 7, "note": "The European twin of OEX -- note the pair below."},
+    {"snapshot": "I:VIX",  "bare": "VIX",  "name": "Volatility Index",           "kind": "index", "exercise": "european", "settlement": "cash",     "priority": 8, "note": "European exercise, but the underlying is a forward-starting variance object, not a tradable spot. Parity-implied forwards do NOT mean what they mean elsewhere. Out of scope for this project."},
+    {"snapshot": "I:OEX",  "bare": "OEX",  "name": "S&P 100 (American)",         "kind": "index", "exercise": "american", "settlement": "cash",     "priority": 90, "note": "The trap: an INDEX option that is American-exercise. Its European twin is XEO. Do not assume index implies European."},
+    {"snapshot": "SPY",    "bare": "SPY",  "name": "SPDR S&P 500 ETF",           "kind": "etf",   "exercise": "american", "settlement": "physical", "priority": 91, "note": "The most liquid options in the world, and unusable here without LSM plus a dividend forecast. Useful only to prove the endpoint and plan work."},
+    {"snapshot": "QQQ",    "bare": "QQQ",  "name": "Invesco Nasdaq-100 ETF",     "kind": "etf",   "exercise": "american", "settlement": "physical", "priority": 92},
+    {"snapshot": "IWM",    "bare": "IWM",  "name": "iShares Russell 2000 ETF",   "kind": "etf",   "exercise": "american", "settlement": "physical", "priority": 93},
+    {"snapshot": "AAPL",   "bare": "AAPL", "name": "Apple",                      "kind": "equity","exercise": "american", "settlement": "physical", "priority": 94, "note": "A single name, for the Phase B/C path once borrow and dividends are handled."}
+  ]
+}

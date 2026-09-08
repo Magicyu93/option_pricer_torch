@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+from collections import Counter
 from typing import Callable
 
 from torch_pricer.errors import MarketDataError
@@ -37,11 +38,17 @@ MASSIVE_BASE = "https://api.massive.com"
 
 _KEY_VARS = ("POLYGON_API_KEY", "MASSIVE_API_KEY")
 
+#: Last transport status, so an empty chain can say whether the request even
+#: succeeded. A 200 with no rows and a 401 are entirely different problems and an
+#: error that cannot tell them apart sends you looking in the wrong place.
+_LAST_STATUS: dict = {}
+
 
 def _default_fetch(url: str, params: dict) -> dict:
     import requests
 
     response = requests.get(url, params=params, timeout=30)
+    _LAST_STATUS["http"] = response.status_code
     if response.status_code == 401:
         raise MarketDataError(
             "Massive rejected the API key (401). Set POLYGON_API_KEY or "
@@ -108,13 +115,26 @@ class MassiveSource:
         params = {"apiKey": self.api_key, "limit": 250}
         options: list[OptionQuote] = []
         spot: float | None = None
+        _LAST_STATUS.clear()
+        seen = 0
+        rejected: Counter = Counter()
+        sample_keys: list[str] = []
+        remote: dict = {}
 
         for _ in range(self.max_pages):
             payload = self.fetch_json(url, params)
+            for field in ("status", "message", "error"):
+                if payload.get(field):
+                    remote[field] = payload[field]
             for row in payload.get("results") or ():
-                parsed = _parse_contract(row)
+                seen += 1
+                if not sample_keys:
+                    sample_keys = sorted(row)
+                parsed, why = _parse_contract(row)
                 if parsed is not None:
                     options.append(parsed)
+                else:
+                    rejected[why] += 1
                 underlying = (row.get("underlying_asset") or {}).get("price")
                 if spot is None and underlying is not None:
                     spot = float(underlying)
@@ -124,7 +144,8 @@ class MassiveSource:
             url, params = nxt, {"apiKey": self.api_key}
 
         if not options:
-            raise MarketDataError(f"Massive returned no option quotes for {ticker}")
+            raise MarketDataError(_no_quotes_message(ticker, seen, rejected,
+                                                     sample_keys, remote))
         if spot is None:
             raise MarketDataError(
                 f"Massive returned quotes for {ticker} but no underlying price; "
@@ -137,13 +158,49 @@ class MassiveSource:
         )
 
 
-def _parse_contract(row: dict) -> OptionQuote | None:
-    """One snapshot row to an ``OptionQuote``, or ``None`` if unusable.
+def _no_quotes_message(ticker, seen, rejected, sample_keys, remote) -> str:
+    """Say which of the several very different failures this actually was.
+
+    An empty chain has at least four causes -- the plan does not cover the
+    instrument, the ticker is wrong, the market has never traded these contracts,
+    or the response shape is not what the parser expects -- and they send you to
+    four different places. The message names the one that happened.
+    """
+    http = _LAST_STATUS.get("http")
+    head = f"Massive returned no usable option quotes for {ticker}"
+    if http:
+        head += f" (HTTP {http})"
+
+    if seen == 0:
+        detail = (
+            "the response carried no contracts at all. Either this plan does not "
+            "include options on this underlying -- index options usually need a "
+            "paid options tier -- or the ticker is wrong. Indices take the 'I:' "
+            "prefix on the snapshot endpoint (I:SPX), and none on the reference "
+            "endpoints. Run `python dashboard/diagnose.py` to see which "
+            "underlyings this key can actually reach."
+        )
+    else:
+        worst = ", ".join(f"{k} x{v}" for k, v in rejected.most_common())
+        detail = (
+            f"{seen} contracts came back and none could be read ({worst}). That is "
+            f"a parser problem, not a data one. Row keys seen: {sample_keys}. "
+            "Run `python dashboard/diagnose.py -v` and send the sample row."
+        )
+
+    if remote:
+        detail += f" The API also said: {remote}."
+    return f"{head}: {detail}"
+
+
+def _parse_contract(row: dict) -> tuple[OptionQuote | None, str]:
+    """One snapshot row to an ``OptionQuote``, with the reason when it is not.
 
     A row with no strike, expiry or right cannot be placed on a surface at all.
     One with no tradable price is dropped here rather than downstream, because
     ``OptionQuote`` refuses to hold neither a premium nor a vol -- and a vendor
-    chain routinely carries contracts that have never traded.
+    chain routinely carries contracts that have never traded. The reason is
+    returned rather than discarded so an empty chain can explain itself.
     """
     details = row.get("details") or {}
     try:
@@ -151,17 +208,17 @@ def _parse_contract(row: dict) -> OptionQuote | None:
         strike = float(details["strike_price"])
         right = Right(details["contract_type"])
     except (KeyError, ValueError, TypeError):
-        return None
+        return None, "no-contract-details"
 
     quote = row.get("last_quote") or {}
     trade = row.get("last_trade") or {}
     bid, ask = quote.get("bid"), quote.get("ask")
     last = trade.get("price")
     if bid is None and ask is None and last is None:
-        return None
+        return None, "never-quoted-or-traded"
     return OptionQuote(
         expiry=expiry, strike=strike, right=right,
         bid=None if bid is None else float(bid),
         ask=None if ask is None else float(ask),
         last=None if last is None else float(last),
-    )
+    ), "ok"
