@@ -13,13 +13,17 @@ dependencies = [
     "scipy",
     "QuantLib",
     "tqdm",
+    "boto3",
+    "pandas>=2.0",
+    "pyarrow>=14",
+    "requests",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]
-include = ["torch_pricer*"]
+include = ["torch_pricer*", "massive_data*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

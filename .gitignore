@@ -30,3 +30,6 @@ htmlcov/
 
 # Notebooks
 .ipynb_checkpoints/
+
+# Massive flat-file cache (raw .csv.gz + parquet); regenerated on demand
+massive_data/market_data/
