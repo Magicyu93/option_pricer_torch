@@ -91,4 +91,6 @@ class DividendsDataLoader:
             )
             return QueryResult(frame=frame, raw_payload=payload["pages"])
 
-        return self.query_store.get_or_create(query, fetch, refresh=refresh)
+        return self.query_store.get_or_create(
+            query, fetch, key=(ticker, f"{start_date}_{end_date}"), refresh=refresh
+        )

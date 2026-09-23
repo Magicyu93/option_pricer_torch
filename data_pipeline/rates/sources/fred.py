@@ -56,7 +56,7 @@ class FredRatesSource(JsonApiClient):
         limit = 100_000
         offset = 0
         pages: list[dict[str, Any]] = []
-        observations: list[dict[str, Any]] = []
+        records: list[dict[str, Any]] = []
 
         while True:
             payload = self._get(
@@ -74,10 +74,10 @@ class FredRatesSource(JsonApiClient):
             )
             pages.append(payload)
             batch = payload.get("observations") or []
-            observations.extend(batch)
-            count = int(payload.get("count", len(observations)))
+            records.extend(batch)
+            count = int(payload.get("count", len(records)))
             offset += len(batch)
             if not batch or offset >= count:
                 break
 
-        return {"pages": pages, "observations": observations}
+        return {"pages": pages, "records": records}
