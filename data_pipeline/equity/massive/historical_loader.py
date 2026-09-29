@@ -15,7 +15,7 @@ from botocore.exceptions import ClientError
 
 from ...common.http import build_retry_session
 from ...common.inputs import normalize_identifiers
-from ...common.storage import normalize_date, parquet_available
+from ...common.storage import normalize_date, parquet_available, partitioned_path
 from .schema import (
     contract_metadata_columns,
     process_indices,
@@ -62,6 +62,7 @@ class MassiveHistoricalDataLoader:
     BUCKET = "flatfiles"
     ENDPOINT = "https://files.massive.com"
     REST_BASE = "https://api.massive.com"
+    PROVIDER = "massive"
 
     # Bump this when the processed cache schema changes.  Raw downloads remain
     # reusable across versions.
@@ -1185,14 +1186,13 @@ class MassiveHistoricalDataLoader:
         return None
 
     def _contract_cache_path(self, date: str, underlying: str) -> Path:
-        return (
-            self.data_dir
-            / "parquet"
-            / self.CACHE_VERSION
-            / "contracts"
-            / f"date={date}"
-            / f"underlying={underlying}"
-            / "contracts.parquet"
+        return partitioned_path(
+            self.data_dir / "parquet" / self.CACHE_VERSION,
+            "contracts",
+            {"date": date, "ticker": underlying},
+            kind="contracts",
+            provider=self.PROVIDER,
+            suffix=".parquet",
         )
 
     def _load_contract_metadata_one(
@@ -1295,14 +1295,13 @@ class MassiveHistoricalDataLoader:
         date: str,
         ticker: str,
     ) -> Path:
-        return (
-            self.data_dir
-            / "parquet"
-            / self.CACHE_VERSION
-            / asset
-            / f"date={date}"
-            / f"underlying={ticker}"
-            / "minute.parquet"
+        return partitioned_path(
+            self.data_dir / "parquet" / self.CACHE_VERSION,
+            asset,
+            {"date": date, "ticker": ticker},
+            kind="minute",
+            provider=self.PROVIDER,
+            suffix=".parquet",
         )
 
     def _empty_cache_marker(
@@ -1311,7 +1310,7 @@ class MassiveHistoricalDataLoader:
         date: str,
         ticker: str,
     ) -> Path:
-        return self._cache_path(asset, date, ticker).with_name(".empty")
+        return self._cache_path(asset, date, ticker).with_suffix(".empty")
 
     def _read_cache(
         self,
@@ -1379,7 +1378,7 @@ class MassiveHistoricalDataLoader:
         asset: FlatAsset,
         date: str,
     ) -> Path | None:
-        path = self.data_dir / "raw" / asset / f"{date}.csv.gz"
+        path = self._raw_path(asset, date)
         if path.exists():
             return path
 
@@ -1418,6 +1417,17 @@ class MassiveHistoricalDataLoader:
             raise
 
         return path
+
+    def _raw_path(self, asset: FlatAsset, date: str) -> Path:
+        """One day's flat file, every ticker in it: partitioned by date only."""
+        return partitioned_path(
+            self.data_dir / "raw",
+            asset,
+            {"date": date},
+            kind="minute",
+            provider=self.PROVIDER,
+            suffix=".csv.gz",
+        )
 
     @staticmethod
     def _s3_key(dataset: str, date: str) -> str:

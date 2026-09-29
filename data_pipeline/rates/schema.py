@@ -9,13 +9,6 @@ from typing import Any
 
 import pandas as pd
 
-SOFR_SERIES = (
-    "SOFR",
-    "SOFR30DAYAVG",
-    "SOFR90DAYAVG",
-    "SOFR180DAYAVG",
-    "SOFRINDEX",
-)
 
 @dataclass(frozen=True)
 class TreasuryTenor:

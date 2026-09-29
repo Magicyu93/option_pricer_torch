@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
@@ -14,14 +15,27 @@ from .schema import DIVIDEND_COLUMNS, normalize_dividend_records
 from .sources import MassiveDividendsSource
 
 
+def _today() -> dt.date:
+    """The current date where US dividends are declared."""
+    return pd.Timestamp.now(tz="America/New_York").date()
+
+
 class DividendsSource(Protocol):
     def fetch(self, ticker: str, start_date: str, end_date: str) -> dict: ...
 
 
 class DividendsDataLoader:
-    """Load declared stock/ETF dividend events; never infer a dividend curve."""
+    """Load declared stock/ETF dividend events; never infer a dividend curve.
 
-    CACHE_SCHEMA = "dividends-v1"
+    Events are cached one calendar year of ex-dividend dates per ticker, e.g.
+    ``parquet/dividends/year=2025/ticker=SPY/dividends_massive.parquet``, so
+    any date range is served from the same files.  A past year is fetched once;
+    the current year is refetched the first time it is needed on each new day,
+    so newly declared dividends appear without ``refresh=True``.
+    """
+
+    CACHE_SCHEMA = "dividends-v2"
+    PROVIDER = "massive"
 
     def __init__(
         self,
@@ -39,7 +53,8 @@ class DividendsDataLoader:
         self.query_store = QueryStore(
             data_dir,
             domain="dividends",
-            provider="massive",
+            provider=self.PROVIDER,
+            kind="dividends",
             enabled=cache_parquet,
         )
         self.store = self.query_store  # compatibility with version 0.1
@@ -52,38 +67,42 @@ class DividendsDataLoader:
         *,
         refresh: bool = False,
     ) -> pd.DataFrame:
+        """Events with an ex-dividend date in the range, by ticker then date."""
         start, end = normalize_date_range(start_date, end_date)
         symbols = normalize_identifiers(tickers, label="dividend ticker")
+        years = range(int(start[:4]), int(end[:4]) + 1)
         frames = [
-            self._load_one(ticker, start, end, refresh=refresh) for ticker in symbols
+            self._load_year(ticker, year, refresh=refresh)
+            for ticker in symbols
+            for year in years
         ]
         nonempty = [frame for frame in frames if not frame.empty]
         if not nonempty:
             return pd.DataFrame(columns=DIVIDEND_COLUMNS)
+        frame = pd.concat(nonempty, ignore_index=True)
+        in_range = frame["ex_dividend_date"].between(pd.Timestamp(start), pd.Timestamp(end))
         return (
-            pd.concat(nonempty, ignore_index=True)
+            frame[in_range]
             .sort_values(["underlying", "ex_dividend_date", "dividend_id"])
             .reset_index(drop=True)
         )
 
-    def _load_one(
-        self,
-        ticker: str,
-        start_date: str,
-        end_date: str,
-        *,
-        refresh: bool,
-    ) -> pd.DataFrame:
+    def _load_year(self, ticker: str, year: int, *, refresh: bool) -> pd.DataFrame:
         query = {
             "schema": self.CACHE_SCHEMA,
+            "provider": self.PROVIDER,
             "ticker": ticker,
-            "start_date": start_date,
-            "end_date": end_date,
+            "year": year,
             "date_field": "ex_dividend_date",
         }
+        today = _today()
+        if year >= today.year:
+            # Still being declared: a copy fetched on an earlier day no longer
+            # matches this query, so it is refetched and overwritten.
+            query["fetched_on"] = today.isoformat()
 
         def fetch() -> QueryResult:
-            payload = self.source.fetch(ticker, start_date, end_date)
+            payload = self.source.fetch(ticker, f"{year}-01-01", f"{year}-12-31")
             frame = normalize_dividend_records(
                 ticker,
                 payload["records"],
@@ -92,5 +111,5 @@ class DividendsDataLoader:
             return QueryResult(frame=frame, raw_payload=payload["pages"])
 
         return self.query_store.get_or_create(
-            query, fetch, key=(ticker, f"{start_date}_{end_date}"), refresh=refresh
+            query, fetch, partitions={"year": year, "ticker": ticker}, refresh=refresh
         )

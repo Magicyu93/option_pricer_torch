@@ -23,7 +23,7 @@ dependencies = [
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]
-include = ["torch_pricer*", "massive_data*"]
+include = ["torch_pricer*", "data_pipeline*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

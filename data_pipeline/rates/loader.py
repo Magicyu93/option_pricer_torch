@@ -115,15 +115,15 @@ class RatesDataLoader:
     """Load published rate observations; never construct a rate curve.
 
     ``provider="massive"`` (the default) serves Treasury constant-maturity
-    yields; ``provider="fred"`` serves any FRED series, including the same
-    Treasury series and SOFR.  Rows are identical in shape either way, and
+    yields; ``provider="fred"`` serves the same Treasury series, or any other
+    FRED series by ID.  Rows are identical in shape either way, and
     Treasury series carry their FRED IDs (``DGS3MO``, ``DGS10``, ...) from both
     providers.  Values stay as published: no tenor mapping, interpolation,
     compounding conversion, or bootstrapping happens here.
 
     Data is cached one calendar year per file, e.g.
-    ``parquet/rates/massive/treasury_yields/2025.parquet``, so any date range is
-    served from the same files.  A past year is fetched once.  The current
+    ``parquet/rates/year=2025/dataset=treasury_yields/daily_massive.parquet``,
+    so any date range is served from the same files.  A past year is fetched once.  The current
     year is refetched the first time it is needed on each new day, so it picks
     up new publications without ``refresh=True``.
     """
@@ -156,6 +156,7 @@ class RatesDataLoader:
             data_dir,
             domain="rates",
             provider=self.provider.name,
+            kind="daily",
             enabled=cache_parquet,
         )
 
@@ -244,7 +245,7 @@ class RatesDataLoader:
             return self.provider.fetch(dataset, f"{year}-01-01", f"{year}-12-31")
 
         return self.query_store.get_or_create(
-            query, fetch, key=(dataset, str(year)), refresh=refresh
+            query, fetch, partitions={"year": year, "dataset": dataset}, refresh=refresh
         )
 
     @staticmethod

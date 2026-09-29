@@ -3,7 +3,6 @@
 from .dividends import DividendsDataLoader, MassiveDividendsSource
 from .equity import MassiveHistoricalDataLoader, UnderlyingSpec
 from .rates import (
-    SOFR_SERIES,
     TREASURY_CMT_SERIES,
     FredRatesSource,
     MassiveTreasuryYieldsSource,
@@ -11,7 +10,6 @@ from .rates import (
 )
 
 __all__ = [
-    "SOFR_SERIES",
     "TREASURY_CMT_SERIES",
     "DividendsDataLoader",
     "FredRatesSource",

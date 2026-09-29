@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import warnings
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -52,17 +52,43 @@ def normalize_date_range(
     return start, end
 
 
+def partitioned_path(
+    base: str | Path,
+    domain: str,
+    partitions: Mapping[str, Any],
+    *,
+    kind: str,
+    provider: str,
+    suffix: str,
+) -> Path:
+    """The one file-naming rule shared by every market-data cache::
+
+        <base>/<domain>/<key>=<value>/.../<kind>_<provider><suffix>
+
+    where ``base`` is ``<root>/raw`` or ``<root>/parquet``,
+    e.g. ``parquet/options/date=2026-09-08/ticker=SPY/minute_massive.parquet``
+    or ``parquet/rates/year=2025/dataset=DGS10/daily_fred.parquet``.  Partitions
+    are Hive-style, time first, so a whole domain reads as one dataset with the
+    partitions as columns; the provider is in the file name, so two sources for
+    the same partition sit side by side instead of overwriting each other.
+    """
+    dirs = [
+        f"{_path_part(name)}={_path_part(value)}" for name, value in partitions.items()
+    ]
+    stem = f"{_path_part(kind)}_{_path_part(provider)}"
+    return Path(base, _path_part(domain), *dirs, stem + suffix)
+
+
 class QueryStore:
     """Persist both raw provider responses and normalized Parquet results.
 
-    Files are named for what they hold, under the same top-level layout as the
-    equity flat files::
+    Files follow :func:`partitioned_path`::
 
-        <root>/raw/<domain>/<provider>/<key...>.json
-        <root>/parquet/<domain>/<provider>/<key...>.parquet
+        <root>/raw/<domain>/<key>=<value>/.../<kind>_<provider>.json
+        <root>/parquet/<domain>/<key>=<value>/.../<kind>_<provider>.parquet
 
-    e.g. ``parquet/dividends/massive/SPY/2025-01-01_2025-12-31.parquet``.  The
-    exact provider query is written into the Parquet metadata and the raw
+    e.g. ``parquet/dividends/year=2025/ticker=SPY/dividends_massive.parquet``.
+    The exact provider query is written into the Parquet metadata and the raw
     envelope; a file whose query no longer matches (a schema bump, a changed
     request parameter) is treated as a miss and overwritten.  Raw JSON remains
     available for audit/re-normalization, while the Parquet file is the fast
@@ -77,11 +103,13 @@ class QueryStore:
         *,
         domain: str,
         provider: str,
+        kind: str,
         enabled: bool = True,
     ) -> None:
         self.root = Path(root)
         self.domain = _path_part(domain)
         self.provider = _path_part(provider)
+        self.kind = _path_part(kind)
         self.enabled = bool(enabled) and parquet_available()
         if enabled and not self.enabled:
             warnings.warn(
@@ -95,24 +123,28 @@ class QueryStore:
     def _canonical(query: Mapping[str, Any]) -> bytes:
         return json.dumps(query, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
-    def paths(self, key: Sequence[str]) -> tuple[Path, Path]:
-        parts = [_path_part(part) for part in key]
-        if not parts:
-            raise ValueError("cache key needs at least one path component")
-        *dirs, stem = parts
-        relative = Path(self.domain, self.provider, *dirs)
-        return (
-            self.root / "raw" / relative / f"{stem}.json",
-            self.root / "parquet" / relative / f"{stem}.parquet",
+    def paths(self, partitions: Mapping[str, Any]) -> tuple[Path, Path]:
+        if not partitions:
+            raise ValueError("cache key needs at least one partition")
+        return tuple(
+            partitioned_path(
+                self.root / layer, self.domain, partitions,
+                kind=self.kind, provider=self.provider, suffix=suffix,
+            )
+            for layer, suffix in (("raw", ".json"), ("parquet", ".parquet"))
         )
 
-    def read(self, query: Mapping[str, Any], key: Sequence[str]) -> pd.DataFrame | None:
+    def read(
+        self, query: Mapping[str, Any], partitions: Mapping[str, Any]
+    ) -> pd.DataFrame | None:
         if not self.enabled:
             return None
-        _, frame_path = self.paths(key)
+        _, frame_path = self.paths(partitions)
         if not frame_path.exists():
             return None
-        table = pq.read_table(frame_path)
+        # The key=value directories are for readers of a whole domain; one
+        # file holds its own columns, so do not infer partition columns here.
+        table = pq.read_table(frame_path, partitioning=None)
         stored = (table.schema.metadata or {}).get(self.METADATA_KEY)
         if stored != self._canonical(query):
             return None
@@ -121,13 +153,13 @@ class QueryStore:
     def write(
         self,
         query: Mapping[str, Any],
-        key: Sequence[str],
+        partitions: Mapping[str, Any],
         frame: pd.DataFrame,
         raw_payload: Any,
     ) -> None:
         if not self.enabled:
             return
-        raw_path, frame_path = self.paths(key)
+        raw_path, frame_path = self.paths(partitions)
         raw_path.parent.mkdir(parents=True, exist_ok=True)
         frame_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -151,19 +183,19 @@ class QueryStore:
         query: Mapping[str, Any],
         fetch: Callable[[], QueryResult],
         *,
-        key: Sequence[str],
+        partitions: Mapping[str, Any],
         refresh: bool = False,
     ) -> pd.DataFrame:
         """Return an exact cached query or fetch and atomically persist it.
 
-        ``key`` names the files: every component but the last is a directory.
+        ``partitions`` name the directories, outermost first.
         """
         if not refresh:
-            cached = self.read(query, key)
+            cached = self.read(query, partitions)
             if cached is not None:
                 return cached
         result = fetch()
-        self.write(query, key, result.frame, result.raw_payload)
+        self.write(query, partitions, result.frame, result.raw_payload)
         return result.frame
 
 
