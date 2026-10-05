@@ -16,7 +16,8 @@ extra forward pass, and it has none of the bump-size sensitivity of finite
 differences.
 
 Second-order risk is the exception, and it is worth understanding why rather
-than discovering it in production. For a vanilla call the simulated terminal
+than discovering it in production. Ask for ``gamma_autograd`` alongside
+``gamma`` to see the difference on any model. For a vanilla call the simulated terminal
 spot is ``S_T = S_0 M`` with ``M`` independent of ``S_0``, so the payoff
 ``max(S_0 M - K, 0)`` is piecewise *linear* in ``S_0``. Its second derivative is
 a Dirac at the strike -- zero almost everywhere -- and a second backward pass
@@ -53,7 +54,17 @@ from torch_pricer.simulator.rng import NormalDraws
 from torch_pricer.simulator.simulator import EulerMaruyamaSimulator
 
 #: Greeks the engine knows how to take.
-SUPPORTED_GREEKS = ("delta", "vega", "theta", "rho", "dividend_rho", "gamma")
+#:
+#: ``model_params`` is ``dV/d(parameter)`` for every parameter the model exposes,
+#: returned as a dict keyed by parameter name. For Black-Scholes that *is* vega,
+#: because the parameter is the quoted vol. For Heston or local vol it is not:
+#: those are sensitivities to fitted quantities, and turning them into market
+#: vega means chaining through the calibration with
+#: :meth:`~torch_pricer.calibration.result.CalibrationResult.market_sensitivity`.
+SUPPORTED_GREEKS = (
+    "delta", "vega", "theta", "rho", "dividend_rho", "gamma", "gamma_autograd",
+    "model_params",
+)
 
 #: Those taken by a single backward pass, and the leaf each differentiates against.
 _PATHWISE_GREEKS = ("delta", "vega", "theta", "rho", "dividend_rho")
@@ -77,6 +88,22 @@ class MCConfig:
     dtype: torch.dtype = torch.float64
     antithetic: bool = True
     progress: bool = False
+    #: Retain only this many intermediate states and recompute the rest during
+    #: the backward pass. 0 disables it.
+    #:
+    #: A state-dependent diffusion retains a graph proportional to
+    #: n_paths x n_steps. Measured on Dupire local vol, 100k paths x 200 steps,
+    #: as bytes saved for the backward pass: 8242 MB undamped, falling roughly
+    #: as 1/segments (4 -> 616 MB, 8 -> 1229, 14 -> 2149, 28 -> 4296). Peak is
+    #: that plus one segment's recomputation, ~= 153 * n + 8242 / n MB here,
+    #: which bottoms out near n = sqrt(8242 / 153) ~= 7 -- the usual
+    #: sqrt(n_steps) rule. Cost is one extra forward pass: 2.6s -> 3.5s.
+    #:
+    #: Black-Scholes retains 918 MB at the same size and does not need this;
+    #: its coefficients do not depend on the state.
+    #:
+    #: Numerically transparent: price and greeks are bit-identical either way.
+    checkpoint_segments: int = 0
     #: Relative spot bump used to difference the pathwise delta into gamma.
     #: Differencing deltas amplifies noise as 1/h while the truncation bias grows
     #: as h^2, and the delta difference is a near-binomial count of the paths
@@ -98,11 +125,15 @@ class PricingResult:
 
     price: float
     stderr: float
-    greeks: dict[str, float | Tensor] = field(default_factory=dict)
+    greeks: dict[str, float | Tensor | dict[str, Tensor]] = field(default_factory=dict)
 
     def __repr__(self) -> str:  # pragma: no cover
         def fmt(v):
-            return f"{v:.6g}" if isinstance(v, float) else f"[{v.numel()} buckets]"
+            if isinstance(v, float):
+                return f"{v:.6g}"
+            if isinstance(v, dict):
+                return "{" + ", ".join(f"{k}={float(x):.4g}" for k, x in v.items()) + "}"
+            return f"[{v.numel()} buckets]"
 
         risk = "".join(f", {k}={fmt(v)}" for k, v in self.greeks.items())
         return f"PricingResult({self.price:.6f} +/- {self.stderr:.6f}{risk})"
@@ -199,6 +230,21 @@ def price(
             g = -g if name == "theta" else g
             risk[name] = float(g) if g.numel() == 1 else g.detach()
 
+    if "gamma_autograd" in greeks:
+        risk["gamma_autograd"] = _gamma_autograd(expected, spot)
+
+    if "model_params" in greeks:
+        named = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
+        if not named:
+            raise PricingError(f"{type(model).__name__} exposes no parameters")
+        grads = torch.autograd.grad(
+            expected, [p for _, p in named], retain_graph=True, allow_unused=True
+        )
+        risk["model_params"] = {
+            n: (torch.zeros_like(p) if g is None else g.detach())
+            for (n, p), g in zip(named, grads)
+        }
+
     if "gamma" in greeks:
         risk["gamma"] = _gamma(market, model, payoff, draws, maturity, config, device)
 
@@ -231,6 +277,36 @@ def _leaf_for(
             )
         return vol
     raise PricingError(f"no leaf registered for greek {name!r}")
+
+
+def _gamma_autograd(expected: Tensor, spot: Tensor) -> float:
+    """Second derivative of the price in spot, straight from a second backward pass.
+
+    Exposed as a diagnostic, not as a number to risk-manage on. What it returns
+    depends on the model, and the difference is worth seeing:
+
+    * **Constant or state-independent coefficients** (Black-Scholes, Heston):
+      ``S_T = S_0 M`` with ``M`` independent of ``S_0``, so the payoff is
+      piecewise *linear* in spot. Its second derivative is a Dirac at the strike,
+      which autograd evaluates as zero almost everywhere. Expect zero to
+      floating-point roundoff -- around ``1e-18``, or ``1e-16`` of the true
+      gamma. Not small, not noisy: structurally absent.
+    * **State-dependent diffusion** (local vol): ``sigma_LV(S_t, t)`` makes the
+      path a nonlinear function of ``S_0``, so a genuine second-order term
+      survives and the result is *not* zero. It is still incomplete -- the
+      density term at the strike is dropped just the same -- so it is a lower
+      bound on gamma of unknown tightness, not gamma.
+
+    Either way :func:`_gamma` is the number to use. This one is here so the
+    failure is visible rather than folklore.
+    """
+    (delta,) = torch.autograd.grad(expected, [spot], create_graph=True, retain_graph=True)
+    (curvature,) = torch.autograd.grad(
+        delta, [spot], retain_graph=True, allow_unused=True
+    )
+    # ``None`` means the graph carries no second-order dependence at all, which
+    # is the piecewise-linear case above; report it as the zero it is.
+    return 0.0 if curvature is None else float(curvature.detach())
 
 
 def _stderr(pv: Tensor, antithetic: bool) -> float:
@@ -279,10 +355,14 @@ def _simulate(
 
     if payoff.needs_path:
         states = simulator.simulate_with_trajectory(
-            x0, t_grid, draws, progress=config.progress
+            x0, t_grid, draws, progress=config.progress,
+            checkpoint_segments=config.checkpoint_segments,
         )
     else:
-        states = simulator.simulate(x0, t_grid, draws, progress=config.progress)
+        states = simulator.simulate(
+            x0, t_grid, draws, progress=config.progress,
+            checkpoint_segments=config.checkpoint_segments,
+        )
 
     pv = market.discount.discount(T) * payoff(sde.asset(states), t_grid)
     return pv, spot, sde
