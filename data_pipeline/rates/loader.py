@@ -12,7 +12,13 @@ import numpy as np
 import pandas as pd
 
 from ..common.inputs import normalize_identifiers
-from ..common.storage import QueryResult, QueryStore, normalize_date, normalize_date_range
+from ..common.storage import (
+    DEFAULT_DATA_DIR,
+    QueryResult,
+    QueryStore,
+    normalize_date,
+    normalize_date_range,
+)
 from .schema import (
     TREASURY_CMT_SERIES,
     TREASURY_TENORS,
@@ -136,7 +142,7 @@ class RatesDataLoader:
         *,
         source: MassiveTreasuryYieldsSource | FredRatesSource | None = None,
         api_key: str | None = None,
-        data_dir: str | Path = "./market_data",
+        data_dir: str | Path = DEFAULT_DATA_DIR,
         cache_parquet: bool = True,
         request_timeout: float = 30.0,
     ) -> None:

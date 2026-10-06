@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+app = ["streamlit>=1.40", "plotly>=5"]
 
 [tool.setuptools.packages.find]
 include = ["torch_pricer*", "data_pipeline*"]

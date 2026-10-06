@@ -8,7 +8,7 @@ That is deliberate. QuantLib keeps the pricing date in a process-wide singleton
 and every term structure built with a *relative* reference date silently follows
 it, which is the classic way a QuantLib service returns a wrong number under
 concurrency. This package sidesteps the problem rather than locking around it:
-curves are :class:`~torch_pricer.calibration.curve_model.curves.RateCurve`
+curves are :class:`~torch_pricer.market.curve.base.Curve`
 objects holding torch tensors indexed by year fraction, and the valuation date
 lives on the :class:`~torch_pricer.market.snapshot.MarketSnapshot` that the
 caller passes in. There is no global pricing state to guard, so pricing calls do
@@ -78,6 +78,25 @@ def parse_tenor(tenor: str) -> ql.Period:
     if len(s) < 2 or not s[:-1].isdigit() or s[-1] not in _TENOR_UNITS:
         raise ValidationError(f"cannot parse tenor {tenor!r}; expected e.g. '3M', '10Y'")
     return ql.Period(int(s[:-1]), _TENOR_UNITS[s[-1]])
+
+
+#: Nominal years per tenor unit. Nominal on purpose: a constant-maturity tenor
+#: names a maturity, not a dated cash flow, so no calendar is involved.
+_NOMINAL_YEARS = {ql.Days: 1 / 365, ql.Weeks: 7 / 365, ql.Months: 1 / 12, ql.Years: 1.0}
+
+
+def tenor_years(tenor: str) -> float:
+    """A tenor as nominal years: ``"3M"`` -> 0.25, ``"10Y"`` -> 10.0."""
+    period = parse_tenor(tenor)
+    return period.length() * _NOMINAL_YEARS[period.units()]
+
+
+def tenor_label(years: float) -> str:
+    """The inverse of :func:`tenor_years` for whole months or years: 0.25 -> ``"3M"``."""
+    months = round(years * 12)
+    if abs(months - years * 12) > 1e-9:
+        raise ValidationError(f"{years} years is not a whole number of months")
+    return f"{months // 12}Y" if months % 12 == 0 else f"{months}M"
 
 
 def to_ql(d: dt.date | dt.datetime | ql.Date | str) -> ql.Date:

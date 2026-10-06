@@ -24,3 +24,17 @@ def as_tensor(x, dtype: torch.dtype | None = None, device=None) -> Tensor:
             x = x.to(device)
         return x
     return torch.as_tensor(x, dtype=dtype or torch.get_default_dtype(), device=device)
+
+
+def interp_linear(x: Tensor, xp: Tensor, fp: Tensor) -> Tensor:
+    """Linear interpolation of ``fp`` over knots ``xp``, evaluated at ``x``.
+
+    ``xp`` must be sorted and hold at least two points. Values outside the knot
+    range are extrapolated along the nearest segment; callers that want another
+    rule outside the knots clamp ``x`` first and patch the ends. Differentiable
+    in ``x`` and ``fp``; the knot lookup itself is not, and need not be.
+    """
+    idx = torch.searchsorted(xp, x.detach().contiguous()).clamp(1, xp.numel() - 1)
+    x0, x1 = xp[idx - 1], xp[idx]
+    f0, f1 = fp[idx - 1], fp[idx]
+    return f0 + (f1 - f0) * (x - x0) / (x1 - x0)

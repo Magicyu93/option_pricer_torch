@@ -22,8 +22,10 @@ import torch
 from torch import Tensor
 
 from torch_pricer.conventions import DEFAULT_DAY_COUNT, to_date, year_fraction
-from torch_pricer.market.curves import RateCurve
-from torch_pricer.market.surface import FlatVolSurface, VolSurface
+from torch_pricer.market.curve.base import Curve
+from torch_pricer.market.curve.curves import RateCurve
+from torch_pricer.market.surface.base import VolSurface
+from torch_pricer.market.surface.flat import FlatVolSurface
 from torch_pricer.tensors import as_tensor
 
 
@@ -40,8 +42,8 @@ class MarketSnapshot:
     spot: Tensor  # underlying stock spot price
 
     # market condition
-    discount: RateCurve
-    dividend: RateCurve
+    discount: Curve
+    dividend: Curve  # or an implied carry curve, when forwards come from parity
     vol_surface: VolSurface  # implied vol surface for options on this underlying
 
     # misc
@@ -79,6 +81,18 @@ class MarketSnapshot:
     def forward(self, t) -> Tensor:
         """Forward level to ``t`` years: ``S D_q(t) / D_r(t)``."""
         return self.spot * self.dividend.discount(t) / self.discount.discount(t)
+
+    def vol(self, strike, t) -> Tensor:
+        """Implied vol at ``strike`` for ``t`` years.
+
+        The surface lives in log-moneyness; the strike is placed on it against
+        this snapshot's own forward, so the forward has one source -- the curves
+        -- and a derivative of the vol reaches spot and the curve pillars as well
+        as the surface.
+        """
+        t = as_tensor(t, dtype=self.spot.dtype, device=self.spot.device)
+        k = torch.log(as_tensor(strike, dtype=t.dtype, device=t.device) / self.forward(t))
+        return self.vol_surface.implied_vol(k, t)
 
     def to(self, device=None, dtype: torch.dtype | None = None) -> MarketSnapshot:
         """A copy of this snapshot on a different device or dtype.

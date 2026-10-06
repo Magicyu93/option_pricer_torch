@@ -19,6 +19,12 @@ except ImportError:  # pragma: no cover - reported by QueryStore
     pa = pq = None
 
 
+#: Where every loader caches by default: ``<repo>/market_data``, wherever the
+#: process runs from.  A relative default would follow the working directory,
+#: so a run from ``scripts/`` or an IDE would start a second, empty cache.
+DEFAULT_DATA_DIR = Path(__file__).resolve().parents[2] / "market_data"
+
+
 @dataclass(frozen=True)
 class QueryResult:
     """One provider query represented in raw and normalized forms."""
@@ -77,6 +83,31 @@ def partitioned_path(
     ]
     stem = f"{_path_part(kind)}_{_path_part(provider)}"
     return Path(base, _path_part(domain), *dirs, stem + suffix)
+
+
+def parse_partitioned_path(base: str | Path, path: str | Path) -> dict[str, Any] | None:
+    """The inverse of :func:`partitioned_path`: what a cached file's path says.
+
+    Returns ``domain``, the ``partitions`` (in order), ``kind``, ``provider``
+    and ``suffix`` for a path under ``base`` laid out by
+    :func:`partitioned_path`, or ``None`` for anything else -- temporaries,
+    markers, stray files.
+    """
+    parts = Path(path).relative_to(base).parts
+    if len(parts) < 2 or any("=" not in p for p in parts[1:-1]):
+        return None
+    name = parts[-1]
+    stem, dot, suffix = name.partition(".")
+    kind, _, provider = stem.rpartition("_")
+    if not kind or not dot or ".tmp" in name or suffix in {"part", "empty"} or name.endswith(".part"):
+        return None
+    return {
+        "domain": parts[0],
+        "partitions": dict(p.split("=", 1) for p in parts[1:-1]),
+        "kind": kind,
+        "provider": provider,
+        "suffix": "." + suffix,
+    }
 
 
 class QueryStore:

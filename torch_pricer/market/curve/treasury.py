@@ -31,7 +31,7 @@ from collections.abc import Sequence
 import numpy as np
 
 from torch_pricer.errors import ValidationError
-from torch_pricer.market.curves import RateCurve
+from torch_pricer.market.curve.curves import RateCurve
 
 #: Coupon interval of a Treasury note or bond, in years.
 _COUPON_PERIOD = 0.5

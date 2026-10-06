@@ -18,6 +18,35 @@ UNDERLYING_COLUMNS = (
     "underlying_window_start_ns",
 )
 
+#: Option roots listed on another root's underlying, mapped to that underlying.
+#: Weekly and PM-settled series trade under their own root -- ``SPXW`` is most
+#: of SPX volume -- but are options on the same index.  The root is kept in
+#: ``option_root``, since it also tells AM from PM settlement.
+OPTION_ROOT_ALIASES = {
+    "SPXW": "SPX",
+    "NDXP": "NDX",
+    "RUTW": "RUT",
+    "VIXW": "VIX",
+}
+
+OPTION_COLUMNS = (
+    "session_date",
+    "timestamp",
+    "underlying",
+    "option_root",
+    "option_ticker",
+    "expiration",
+    "option_type",
+    "strike",
+    "option_open",
+    "option_high",
+    "option_low",
+    "option_close",
+    "option_volume",
+    "option_transactions",
+    "option_window_start_ns",
+)
+
 CONTRACT_METADATA_COLUMNS = (
     "exercise_style",
     "contract_underlying_asset",
@@ -33,6 +62,11 @@ CONTRACT_METADATA_COLUMNS = (
 
 def unified_underlying_columns() -> list[str]:
     return list(UNDERLYING_COLUMNS)
+
+
+def option_underlying(roots: pd.Series) -> pd.Series:
+    """The underlying each option root is written on."""
+    return roots.replace(OPTION_ROOT_ALIASES)
 
 
 def contract_metadata_columns() -> list[str]:
@@ -61,7 +95,8 @@ def process_options(
     _ensure_columns(frame, ["volume", "transactions"])
 
     symbols = frame["ticker"].astype("string")
-    frame["underlying"] = symbols.str.slice(2, -15)
+    frame["option_root"] = symbols.str.slice(2, -15)
+    frame["underlying"] = option_underlying(frame["option_root"])
     expiration_code = symbols.str.slice(-15, -9)
     type_code = symbols.str.slice(-9, -8)
     strike_code = symbols.str.slice(-8)
@@ -90,24 +125,8 @@ def process_options(
             "window_start": "option_window_start_ns",
         }
     )
-    columns = [
-        "session_date",
-        "timestamp",
-        "underlying",
-        "option_ticker",
-        "expiration",
-        "option_type",
-        "strike",
-        "option_open",
-        "option_high",
-        "option_low",
-        "option_close",
-        "option_volume",
-        "option_transactions",
-        "option_window_start_ns",
-    ]
     return (
-        frame[columns]
+        frame[list(OPTION_COLUMNS)]
         .sort_values(["underlying", "timestamp", "expiration", "option_type", "strike"])
         .reset_index(drop=True)
     )

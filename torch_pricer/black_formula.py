@@ -77,21 +77,74 @@ def implied_vol(
     vol_bounds: tuple[float, float] = (1e-4, 5.0),
     vol_tolerance: float = 1e-5,
 ):
-    '''
-    Vectorised Black implied vol. ``nan`` where no volatility reproduces the price.
+    """Vectorised Black implied vol. ``nan`` where no volatility reproduces the price.
 
-    :param price:
-    :param forward:
-    :param strike:
-    :param t:
-    :param discount:
-    :param right:
-    :param tol:
-    :param max_newton:
-    :param max_bisect:
-    :param vol_bounds:
-    :param vol_tolerance:
-    :return:
-    '''
+    Args broadcast against each other, as in :func:`black_price`; ``right`` is
+    +1 for a call and -1 for a put.
 
-    raise NotImplementedError("implied_vol")
+    Newton on the price, kept inside a bracket that every step narrows, for
+    ``max_newton`` steps; whatever has not converged then bisects for up to
+    ``max_bisect`` more. Newton alone fails exactly where it matters for listed
+    options -- far out of the money, where vega vanishes and a step overshoots
+    the bracket -- and bisection alone is slow; the bracket makes the hand-off
+    safe.
+
+    A point has converged when the price matches to ``tol`` relative to its
+    *time value*, or the bracket is narrower than ``vol_tolerance``. Relative to
+    the time value, not the premium: deep in the money the premium is almost all
+    intrinsic, and a premium-relative tolerance stops while the vol is still
+    off by tens of points. For the same reason a time value below float64
+    resolution of the premium cannot be inverted at all.
+
+    ``nan`` marks prices outside the no-arbitrage range ``(intrinsic, F or K)``,
+    time value too small to resolve, prices no vol in ``vol_bounds`` reaches,
+    and points that never converged.
+    """
+    w = np.asarray(right, dtype=float)
+    price, forward, strike, t, discount, w = np.broadcast_arrays(
+        *(np.asarray(x, dtype=float) for x in (price, forward, strike, t, discount)), w
+    )
+    target = price / discount  # undiscounted, so the bounds are F and K
+
+    lo = np.full(target.shape, float(vol_bounds[0]))
+    hi = np.full(target.shape, float(vol_bounds[1]))
+
+    def undiscounted(vol):
+        return black_price(forward, strike, t, vol, 1.0, w)
+
+    lower, upper = np.maximum(w * (forward - strike), 0.0), np.where(w > 0, forward, strike)
+    time_value = target - lower
+    valid = (
+        np.isfinite(target) & (t > 0) & (target < upper)
+        & (time_value > 1e-12 * np.maximum(target, 1.0))
+        & (undiscounted(lo) <= target) & (target <= undiscounted(hi))
+    )
+
+    # Start where the time value is ATM-like: sigma ~ sqrt(2 |ln F/K| / T),
+    # floored so an exactly-ATM point does not start at the lower bound.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        guess = np.sqrt(2.0 * np.abs(np.log(forward / strike)) / t)
+    vol = np.clip(np.where(np.isfinite(guess), np.maximum(guess, 0.2), 0.2), lo, hi)
+    done = ~valid
+
+    for step in range(max_newton + max_bisect):
+        diff = undiscounted(vol) - target
+        converged = (np.abs(diff) <= tol * np.maximum(time_value, 1e-300)) | (hi - lo <= vol_tolerance)
+        done |= converged
+        if done.all():
+            break
+        # Price is increasing in vol, so the sign of the error says which end moves.
+        hi = np.where(~done & (diff > 0), vol, hi)
+        lo = np.where(~done & (diff < 0), vol, lo)
+        midpoint = 0.5 * (lo + hi)
+        if step < max_newton:
+            vega = black_vega(forward, strike, t, vol)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                newton = vol - diff / vega
+            inside = np.isfinite(newton) & (newton > lo) & (newton < hi)
+            proposal = np.where(inside, newton, midpoint)
+        else:
+            proposal = midpoint
+        vol = np.where(done, vol, proposal)
+
+    return np.where(valid & done, vol, np.nan)

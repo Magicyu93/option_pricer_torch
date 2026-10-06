@@ -17,28 +17,25 @@ discount factors monotone. Outside the pillar range the zero rate is held flat.
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch import Tensor
 
 from torch_pricer.errors import ValidationError
-from torch_pricer.tensors import EPS, as_tensor
+from torch_pricer.market.curve.base import Curve
+from torch_pricer.tensors import EPS, as_tensor, interp_linear
 
 
-def _interp_linear(x: Tensor, xp: Tensor, fp: Tensor) -> Tensor:
-    """Linear interpolation of ``fp`` over knots ``xp``, evaluated at ``x``.
+def _float64(x) -> Tensor:
+    """Tensors pass through; anything else becomes float64, not torch's float32 default."""
+    if isinstance(x, Tensor):
+        return x
+    return torch.as_tensor(np.asarray(x, dtype=float), dtype=torch.float64)
 
-    ``xp`` must be sorted and hold at least two points. Values outside the knot
-    range are extrapolated along the nearest segment; callers that want flat
-    extrapolation clamp ``x`` first.
-    """
-    idx = torch.searchsorted(xp, x.detach().contiguous()).clamp(1, xp.numel() - 1)
-    x0, x1 = xp[idx - 1], xp[idx]
-    f0, f1 = fp[idx - 1], fp[idx]
-    return f0 + (f1 - f0) * (x - x0) / (x1 - x0)
 
 # TODO: add as_of date
-class RateCurve(nn.Module):
+class RateCurve(Curve):
     """A zero curve carrying its own pillar rates.
 
     Build one with :meth:`flat` or :meth:`from_zeros` rather than ``__init__``.
@@ -71,47 +68,33 @@ class RateCurve(nn.Module):
 
     @classmethod
     def from_zeros(cls, times, zeros, label: str = "zero") -> RateCurve:
-        """A curve through continuously-compounded zero rates at the given year fractions."""
-        return cls(as_tensor(times), as_tensor(zeros), label)
+        """A curve through continuously-compounded zero rates at the given year fractions.
 
-    # -- queries --------------------------------------------------------
+        Arrays and lists are kept in float64: a bootstrapped curve cast to
+        torch's float32 default keeps only ~7 digits, which calibration notices.
+        """
+        return cls(_float64(times), _float64(zeros), label)
+
+    # -- the curve ------------------------------------------------------
+    @property
+    def risk_factors(self) -> Tensor:
+        """The pillar zeros: rho comes back bucketed, one entry per pillar."""
+        return self.pillar_zeros
+
     def zero_rate(self, t) -> Tensor:
         """Continuously-compounded zero rate to ``t`` years."""
-        t = as_tensor(t, dtype=self.pillar_zeros.dtype, device=self.pillar_zeros.device)
+        t = self._time(t)
         if self.pillar_times.numel() == 1:
             return self.pillar_zeros[0].expand(t.shape) if t.dim() else self.pillar_zeros[0]
 
         tp = self.pillar_times
         clamped = t.clamp(float(tp[0]), float(tp[-1]))
-        integrated = _interp_linear(clamped, tp, self.pillar_zeros * tp)
+        integrated = interp_linear(clamped, tp, self.pillar_zeros * tp)
         inside = integrated / clamped.clamp_min(EPS)
         # Flat in the zero rate beyond the end pillars.
         return torch.where(
             t < tp[0], self.pillar_zeros[0], torch.where(t > tp[-1], self.pillar_zeros[-1], inside)
         )
-
-    def discount(self, t) -> Tensor:
-        """Discount factor to ``t`` years. ``discount(0) == 1`` by construction."""
-        t = as_tensor(t, dtype=self.pillar_zeros.dtype, device=self.pillar_zeros.device)
-        return torch.exp(-self.zero_rate(t) * t)
-
-    def forward_rate(self, t1, t2) -> Tensor:
-        """Continuously-compounded forward rate over ``[t1, t2]``."""
-        t1 = as_tensor(t1, dtype=self.pillar_zeros.dtype, device=self.pillar_zeros.device)
-        t2 = as_tensor(t2, dtype=self.pillar_zeros.dtype, device=self.pillar_zeros.device)
-        span = (t2 - t1).clamp_min(EPS)
-        return (torch.log(self.discount(t1)) - torch.log(self.discount(t2))) / span
-
-    def instantaneous_forward(self, t, bump: float = 1e-4) -> Tensor:
-        """The short rate at ``t``, as a one-basis-point-of-a-year forward.
-
-        This is what an SDE's drift wants. For a flat curve it is exact; for a
-        pillared curve it is the forward over a very short window, which is the
-        same approximation an Euler step already makes about the drift being
-        constant across the step.
-        """
-        t = as_tensor(t, dtype=self.pillar_zeros.dtype, device=self.pillar_zeros.device)
-        return self.forward_rate(t, t + bump)
 
     def extra_repr(self) -> str:  # pragma: no cover
         n = self.pillar_times.numel()

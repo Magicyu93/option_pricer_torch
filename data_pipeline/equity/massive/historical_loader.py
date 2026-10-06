@@ -15,9 +15,16 @@ from botocore.exceptions import ClientError
 
 from ...common.http import build_retry_session
 from ...common.inputs import normalize_identifiers
-from ...common.storage import normalize_date, parquet_available, partitioned_path
+from ...common.storage import (
+    DEFAULT_DATA_DIR,
+    normalize_date,
+    parquet_available,
+    partitioned_path,
+)
 from .schema import (
+    OPTION_COLUMNS,
     contract_metadata_columns,
+    option_underlying,
     process_indices,
     process_options,
     process_stocks,
@@ -134,7 +141,7 @@ class MassiveHistoricalDataLoader:
         self,
         access_key: str | None = None,
         secret_key: str | None = None,
-        data_dir: str | Path = "./market_data",
+        data_dir: str | Path = DEFAULT_DATA_DIR,
         timezone: str = "America/New_York",
         chunksize: int = 500_000,
         cache_parquet: bool = True,
@@ -991,7 +998,9 @@ class MassiveHistoricalDataLoader:
                 # The suffix is fixed at 15 characters.  Parsing from the right
                 # avoids making assumptions about valid underlying characters.
                 roots = symbols.str.slice(2, -15)
-                mask = symbols.str.startswith("O:", na=False) & roots.isin(wanted)
+                mask = symbols.str.startswith("O:", na=False) & option_underlying(
+                    roots
+                ).isin(wanted)
 
             selected = chunk.loc[mask].copy()
             if not selected.empty:
@@ -1208,7 +1217,7 @@ class MassiveHistoricalDataLoader:
 
         if self.cache_parquet and not metadata.empty:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
-            metadata.to_parquet(cache_path, index=False, compression="zstd")
+            self._write_parquet(metadata, cache_path)
 
         return metadata
 
@@ -1328,7 +1337,7 @@ class MassiveHistoricalDataLoader:
             path = self._cache_path(asset, date, ticker)
             empty_marker = self._empty_cache_marker(asset, date, ticker)
 
-            if path.exists():
+            if path.exists() and self._cache_is_current(asset, path):
                 frames.append(pd.read_parquet(path))
             elif empty_marker.exists():
                 continue
@@ -1336,6 +1345,30 @@ class MassiveHistoricalDataLoader:
                 missing.append(ticker)
 
         return self._concat(frames), missing
+
+    @staticmethod
+    def _cache_is_current(asset: FlatAsset, path: Path) -> bool:
+        """Whether a cached file has every column the current schema writes.
+
+        A file from before a schema change is a miss to be rebuilt from the raw
+        flat file, not a result: an options file without ``option_root`` also
+        predates the weekly roots, so it is missing most of the contracts.
+        """
+        if asset != "options":
+            return True
+        import pyarrow.parquet as pq
+
+        return set(OPTION_COLUMNS) <= set(pq.read_schema(path).names)
+
+    @staticmethod
+    def _write_parquet(frame: pd.DataFrame, path: Path) -> None:
+        """Write via a temporary file, so an interrupted run leaves no partial cache."""
+        temp = path.with_suffix(".tmp.parquet")
+        try:
+            frame.to_parquet(temp, index=False, compression="zstd")
+            temp.replace(path)
+        finally:
+            temp.unlink(missing_ok=True)
 
     def _write_cache(
         self,
@@ -1363,7 +1396,7 @@ class MassiveHistoricalDataLoader:
             )
 
             if not part.empty:
-                part.to_parquet(path, index=False, compression="zstd")
+                self._write_parquet(part, path)
                 if empty_marker.exists():
                     empty_marker.unlink()
             elif ticker not in found:
@@ -1567,5 +1600,5 @@ class MassiveHistoricalDataLoader:
 if __name__ == "__main__":
     raise SystemExit(
         "Use scripts/download_equity_data.py or import "
-        "market_data.equity.MassiveHistoricalDataLoader."
+        "data_pipeline.equity.MassiveHistoricalDataLoader."
     )

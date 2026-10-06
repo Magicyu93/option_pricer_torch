@@ -60,7 +60,8 @@ from torch_pricer.simulator.simulator import EulerMaruyamaSimulator
 #: because the parameter is the quoted vol. For Heston or local vol it is not:
 #: those are sensitivities to fitted quantities, and turning them into market
 #: vega means chaining through the calibration with
-#: :meth:`~torch_pricer.calibration.result.CalibrationResult.market_sensitivity`.
+#: a ``market_sensitivity`` on :class:`~torch_pricer.calibration.CalibrationResult`
+#: (not implemented yet).
 SUPPORTED_GREEKS = (
     "delta", "vega", "theta", "rho", "dividend_rho", "gamma", "gamma_autograd",
     "model_params",
@@ -264,9 +265,9 @@ def _leaf_for(
     if name == "theta":
         return maturity
     if name == "rho":
-        return market.discount.pillar_zeros
+        return market.discount.risk_factors
     if name == "dividend_rho":
-        return market.dividend.pillar_zeros
+        return market.dividend.risk_factors
     if name == "vega":
         vol = getattr(model, "vol", None)
         if not isinstance(vol, Tensor):
